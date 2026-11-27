@@ -34,7 +34,7 @@ def batch(*, name, task_args, tasks_file, defaults, cwd, use_worktrees=False, ru
     spawned = sum(1 for r in rows if r.get("run_id"))
     reply = {"group": name, "spawned": spawned, "requested": len(plans), "runs": rows}
     if spawned:
-        reply["next"] = {"command": invocation("result", "--group", name, "--wait", *registry_args(registry)), "run_in_background": True, "why": "returns when every member has ended or one needs attention, and prints each member's result"}
+        reply["next"] = {"command": invocation("result", "--group", name, "--wait", *registry_args(registry)), "run_in_background": True, "why": "returns when every member has ended, one has failed, or one needs attention, and prints each member's result"}
     isolated = [p for p in plans if p["worktree"]]
     if isolated:
         reply["worktrees"] = {"base": facts["head"], "uncommitted_in_your_tree": facts["uncommitted"], "note": "each checkout starts from your local HEAD without your uncommitted changes, and holds only what git tracks (plus, for a claude member, what .worktreeinclude copies); moving changes back into your tree is yours to do, then `clean`"}

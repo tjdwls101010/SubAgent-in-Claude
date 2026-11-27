@@ -115,6 +115,15 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
     return reply
 
 
+def send(*, ref, message, interrupt=False, cwd, runs_dir=None):
+    """Write `message` into a live run through its engine (see the adapter's `send`)."""
+    refuse_inside_worker()
+    registry = resolve_runs_dir(cwd, runs_dir)
+    run_dir = find_run(registry, ref)
+    meta = reap(run_dir)
+    return adapter(meta["engine"]).send(run_dir, meta, message, interrupt=interrupt, runs_dir=registry)
+
+
 def stop_one(run_dir):
     meta = reap(run_dir)
     entry = {"run_id": meta["run_id"], "engine": meta.get("engine"), "native_id": meta.get("native_id"), "signals_sent": []}

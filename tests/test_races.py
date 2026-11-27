@@ -71,7 +71,6 @@ class CliRaces(Sandbox):
             if p.returncode == 0:
                 self.wait_state(json.loads(p.stdout)["run_id"])
 
-    @unittest.skip("send comes with PR ④")
     def test_sends_racing_the_close_are_delivered_or_refused(self):
         """A send either lands in the run (and is delivered) or is refused; none is accepted and then lost. A burst of sends around the answer races the close; a second burst after the run has ended must all be refused."""
         import threading
@@ -100,7 +99,7 @@ class CliRaces(Sandbox):
             self.assertTrue(all(a["delivered"] for a in accepted), accepted)
             self.assertEqual(row["undelivered"], [])
             self.assertEqual(row["messages"], 1 + len(accepted))
-            (call,) = [c for c in self.fake_calls() if "-p" in c["argv"] and c["env"].get("CLAUDE_SKILL_RUN") == reply["run_id"]]
+            (call,) = [c for c in self.fake_calls() if "-p" in c["argv"] and c["env"].get("DELEGATE_RUN") == reply["run_id"]]
             self.assertEqual(sorted(m["uuid"] for m in call["messages"][1:]), sorted(a["message_uuid"] for a in accepted))
         self.assertGreater(accepted_total, 0, "no send reached a live run: the burst raced nothing")
 

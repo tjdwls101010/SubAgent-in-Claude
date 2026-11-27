@@ -140,6 +140,10 @@ def group_result(registry, name, *, manifest=None, wait_reason=None, fresh=None,
             args += ["--wait-timeout", f"{wait_timeout:g}"]
         header["next"] = {"command": invocation(*args), "run_in_background": True, "why": "waits again, for every member to end or for attention that is new"}
         header["note"] = "members are still live: their messages are partial"
+    if wait_reason:
+        header["returned_because"] = wait_reason
+    if wait_reason == "member_failed":
+        header["note"] = "a member ended in failure while others still run; " + header.get("note", "")
     if wait_reason == "timeout":
         header["note"] = "--wait-timeout passed before every member ended; " + header.get("note", "")
     return json.dumps(header, ensure_ascii=False) + "\n" + "".join(sections)

@@ -4,32 +4,41 @@ from __future__ import annotations
 
 import time
 
-from delegate.registry import TERMINAL, find_run, resolve_runs_dir, worker_alive
+from delegate.registry import TERMINAL, find_run, resolve_runs_dir, update_meta, worker_alive
 from delegate.util import now, timings
 
 from .rows import attention, last_event_at, load
 from .snapshot import snapshot_of
 
 
-def wait(run_dirs, timeout=None):
-    """Block until every run in `run_dirs` has ended, a new attention appears on any of them, or `timeout` seconds pass. Returns (reason, {run_dir: [attention…]}) with reason `ended`, `attention` or `timeout`.
+def failed(meta):
+    """Ended without completing, with nothing of it still running — and not because someone stopped it."""
+    return meta.get("state") in TERMINAL and meta.get("state") != "completed" and not worker_alive(meta) and not meta.get("stop_requested")
 
-    Attention already present when the wait begins does not end it, so waiting again on a run that needs attention waits for something new; a stall counts afresh from the start of the wait."""
+
+def wait(run_dirs, timeout=None):
+    """Block until every run in `run_dirs` has ended, a new attention appears on any of them, one of several ends in failure, or `timeout` seconds pass. Returns (reason, {run_dir: [attention…]}) with reason `ended`, `attention`, `member_failed` or `timeout`.
+
+    Attention already present when the wait begins does not end it, so waiting again waits for something new; a stall counts afresh from the start of the wait. A failure ends a wait on several runs at once, since the others may be worth stopping or redirecting while they still run (a group whose codex member ran out of its limit) — each failure once: a wait that returns for it marks it reported on the run, so a failure that came between two waits, or before the first, is still returned by the next one, and none is returned twice."""
     t = timings()
     began = now()
-    seen = {}
+    seen, failed_before = {}, set()
     for d in run_dirs:
         meta, v = load(d)
         seen[d] = {a["reason"] for a in attention(meta, v, last_event_at(d, meta), began) if a["reason"] != "stalled"}
+        if failed(meta) and meta.get("failure_reported"):
+            failed_before.add(d)
     while True:
         at = now()
         ended = True
-        fresh = {}
+        fresh, newly_failed = {}, []
         for d in run_dirs:
             meta, v = load(d)
             # A run whose worker still writes after its supervisor died has not ended.
             if meta.get("state") not in TERMINAL or worker_alive(meta):
                 ended = False
+            elif failed(meta) and d not in failed_before:
+                newly_failed.append(d)
             current = attention(meta, v, last_event_at(d, meta), at, since=began)
             reasons = {a["reason"] for a in current}
             seen[d] &= reasons
@@ -40,6 +49,10 @@ def wait(run_dirs, timeout=None):
             return "ended", {}
         if fresh:
             return "attention", fresh
+        if newly_failed and len(run_dirs) > 1:
+            for d in newly_failed:
+                update_meta(d, lambda m: m.__setitem__("failure_reported", True))
+            return "member_failed", {}
         if timeout is not None and at - began >= timeout:
             return "timeout", {}
         time.sleep(max(t["poll"], 0.05))

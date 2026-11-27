@@ -24,7 +24,7 @@ from delegate.doctor import doctor
 from delegate.engine import ENGINES, PROFILES, supervise
 from delegate.errors import Refusal
 from delegate.observe import GROUP_MESSAGE_CAP, LISTING_ROWS, STALL_SECONDS, log, result, status
-from delegate.runs import refuse_inside_worker, resume, start, stop
+from delegate.runs import refuse_inside_worker, resume, send, start, stop
 
 EXIT_REFUSED, EXIT_ARGUMENTS, EXIT_BLOCKED = 1, 2, 3
 
@@ -49,7 +49,7 @@ PRIORITY_HELP = "codex only: request service_tier \"priority\" (Fast mode), reco
 
 RUN_EPILOG = """\
 Answers once the engine confirms the start (codex: `thread.started`, with its thread id; claude: its first init), or after 15 s with `state: starting` and a `note`, so a start the engine never took — not logged in, a bad flag, an engine too old — says so here; a turn that fails after the engine took it is `result`'s to report. A detached supervisor drives the run, so it outlives this command and nothing announces its end: run the reply's `next.command` in the background; it returns when the run ends or needs attention, and prints the result.
-A codex worker is isolated: Codex does not load your config.toml, so no MCP servers, plugins, agent roles or hooks, and the run's model and effort are only what you name. A claude worker inherits your whole Claude Code environment — CLAUDE.md files, skills, hooks, plugins, MCP servers, memory — under the profile's restrictions, with background tasks off so its turn ending is the answer (a tool still running after it is shown as `finishing` until the process exits), and without the tools that start or message other agents. Every worker is told nobody can answer it, that its final message is what you receive, to leave git commits, branches, pushes and merges to you unless the prompt asks, and that it cannot start workers: inside a worker this skill refuses to start, stop, resume or clean runs."""
+A codex worker is isolated: Codex does not load your config.toml, so no MCP servers, plugins, agent roles or hooks, and the run's model and effort are only what you name. A claude worker inherits your whole Claude Code environment — CLAUDE.md files, skills, hooks, plugins, MCP servers, memory — under the profile's restrictions, with background tasks off so its turn ending is the answer (a tool still running after it is shown as `finishing` until the process exits), and without the tools that start or message other agents. Every worker is told nobody can answer it, that its final message is what you receive, to leave git commits, branches, pushes and merges to you unless the prompt asks, and that it cannot start workers: inside a worker this skill refuses to start, steer, stop, resume or clean runs."""
 
 START_DESC = """\
 Start a fresh worker on PROMPT, detached.
@@ -61,6 +61,11 @@ Run another turn on an existing session or thread, detached: a new run with its 
 For a session the registry never saw, give --engine, --profile, --cwd (the directory it ran in: Claude Code finds a session by its project directory; for a session that ran in a Claude Code worktree, the directory it was launched from and the worktree both work, and claude re-enters the worktree) and, for codex, --model and --effort (an isolated run reads no config.toml), for claude --effort (a resumed session does not keep it: without one it runs at another effort than it had); claude keeps the session's model unless --model changes it.
 Prints: one JSON line as `start` prints, plus `profile_changed_from` when --profile changed it, and `note` for a session the registry never saw.
 Exits: 0 started; 1 refused or failed — the session has a live run (`instead` says what to do), run from inside a worker, the engine missing or too old, a run with no native id, or the run failed before the engine confirmed it (a session the engine does not know fails here); 2 the command line must change — no REF, no prompt or an empty one, an --engine other than the one the run recorded (`instead` gives the two commands that hand the work over), an unknown REF without --engine, a session or thread the registry never saw without --profile, --cwd, (codex) --model and --effort or (claude) --effort, a model or effort the engine does not take, or anything else the parser refuses."""
+
+SEND_DESC = """\
+Write a message into a live claude run while it works, to correct or extend what it is doing. By default the message has priority `next`: Claude Code reads it once the tools it is running finish, in the same turn or, if the turn ends first, as the next one. --interrupt sends it with priority `now`, which ends the running turn and starts on the message. The run ends once every message has been answered. A codex run takes no message mid-turn (this skill runs it through `codex exec`): the refusal's `instead` says to wait for it, or stop it and resume with the message.
+Prints: one JSON line — `run_id`, `engine`, `message_uuid`, `priority`, `delivered` (whether the supervisor wrote it to the worker within 10 s), and `note` when it did not.
+Exits: 0 queued; 1 refused — a codex run, a run that no longer reads messages (it ended, is finishing, or its supervisor is gone; `instead` says what to do), a run that already took 16 messages, no such run, or run from inside a worker; 2 the command line must change — no REF, no message or an empty one."""
 
 BATCH_DESC = """\
 Start several runs as one named group, of one engine or of both: each --task, then each --tasks-file line, is a member started as `start` (or `resume`) would start it. A new member takes a task's own fields over the group's flags; the group's --model, --effort and --priority belong to its --engine, so they reach only members of that engine (every member, when the group names no engine), and a member of the other engine names its own. A resumed member keeps what its run recorded unless its own line changes it. The group is one name for `status`, `result` and `stop` with --group, and for `clean`; each of its slots is the run that slot started. It outlives the session that started it, and its name stays reserved until `clean` releases it. N workers spend their engine's subscription limits N times over.
@@ -104,11 +109,12 @@ Exits: 0 printed; 1 refused — no such run; 2 the command line must change — 
 
 RESULT_DESC = f"""\
 What a run or a group concluded: at once (partial while live), or with --wait once it ends or needs attention.
-Prints: a JSON header line — `run_id`, `engine`, `native_id`, `state`, `exit_code`, `error`, `attention`, `files_changed`, `usage`, the engine's own fields — codex: `turn_failed`, `commands`, `sandbox`, `read_only`, `isolated`, `parse_error` when a --schema run's final message is not JSON; claude: `answered` (the messages the answer replies to), `unanswered`, `last_message_unanswered`, `answer_unconfirmed` (claude did not say which message it answered), `blocked_by_hook`, `last_message_blocked`, `possibly_blocked`, `permission_denials`, `files_changed_note`, `tool_calls`, `cost_usd`, `followups` (background follow-up turns, not the answer), `mode_mismatch`, `profile_exceptions` — then `message_bytes`, and `note` and `next` while the run is live; then the final message. A --schema run prints one indented JSON document instead, whose `json` is the structured output (null while starting or running; null with `message` holding the final text when the run ended without one). Once a claude run is `finishing` its answer is decided: the text and `json` are the answer, and `note` says claude is still running something. For a group: a JSON header — `group`, `generation`, `group_state`, `overlaps` (paths, relative to each member's checkout, that more than one member changed, with their indexes), `totals`, `attention` (members that need a look), `members` (each one's `engine`, `run_id`, `state`, `bytes`, `shown_bytes`, counts) and `next` while live — then per member a `--- [<index>:<label>] engine=<engine> run=<id> state=<state> bytes=<n>` line and its message cut to {GROUP_MESSAGE_CAP} B.
+Prints: a JSON header line — `run_id`, `engine`, `native_id`, `state`, `exit_code`, `error`, `attention`, `files_changed`, `usage`, `returned_because` (with --wait), the engine's own fields — codex: `turn_failed`, `commands`, `sandbox`, `read_only`, `isolated`, `parse_error` when a --schema run's final message is not JSON; claude: `answered` (the messages the answer replies to), `unanswered`, `last_message_unanswered`, `answer_unconfirmed` (claude did not say which message it answered), `blocked_by_hook`, `last_message_blocked`, `possibly_blocked`, `permission_denials`, `files_changed_note`, `tool_calls`, `cost_usd`, `followups` (background follow-up turns, not the answer), `mode_mismatch`, `profile_exceptions` — then `message_bytes`, and `note` and `next` while the run is live; then the final message. A --schema run prints one indented JSON document instead, whose `json` is the structured output (null while starting or running; null with `message` holding the final text when the run ended without one). Once a claude run is `finishing` its answer is decided: the text and `json` are the answer, and `note` says claude is still running something. For a group: a JSON header — `group`, `generation`, `group_state`, `overlaps` (paths, relative to each member's checkout, that more than one member changed, with their indexes), `totals`, `attention` (members that need a look), `returned_because` (with --wait), `members` (each one's `engine`, `run_id`, `state`, `bytes`, `shown_bytes`, counts) and `next` while live — then per member a `--- [<index>:<label>] engine=<engine> run=<id> state=<state> bytes=<n>` line and its message cut to {GROUP_MESSAGE_CAP} B.
 Exits: 0 printed, whatever the run's state, also when --wait-timeout passes; 1 refused — no such run or group; 2 the command line must change — neither or both of --run and --group, --wait-timeout without --wait or not positive."""
 
 RESULT_EPILOG = f"""\
---wait on a group returns when every member has ended or any member has new attention; it waits on the members the group had when the wait began. --wait returns when the run ends, or early when attention appears that was not there when it began: no event for {STALL_SECONDS} s (`stalled`), and for claude API retries for 120 s (`retrying`), a rejected rate limit (`rate_limited`), claude still running 120 s after the answer (`finishing`), or a turn that ended with no reply and no hook notice (`possibly_blocked`). The header's `attention` says which, with what the run was doing; its `next` waits again for something new. Nothing is stopped for it.
+--wait on a group returns when every member has ended, any member has new attention, or a member ends in failure while others still run (`member_failed`: worth stopping or redirecting the rest — say, a codex member that ran out of its limit); it waits on the members the group had when the wait began, and what was already there then (a member already failed, attention already shown) does not end it again.
+The header's `returned_because` (with --wait) is `ended`, `attention`, `member_failed` or `timeout`. --wait returns when the run ends, or early when attention appears that was not there when it began: no event for {STALL_SECONDS} s (`stalled`), and for claude API retries for 120 s (`retrying`), a rejected rate limit (`rate_limited`), claude still running 120 s after the answer (`finishing`), or a turn that ended with no reply and no hook notice (`possibly_blocked`). The header's `attention` says which, with what the run was doing; its `next` waits again for something new. Nothing is stopped for it.
 `files_changed` lists the paths the engine's events say it changed (codex: its file_change events, relative to the run's directory; claude: Edit, Write and NotebookEdit calls); files a shell command wrote are not in it.
 A codex run's final message is the file Codex wrote at the end (`-o`); without one (a run stopped or failed before it), or while it runs, the latest agent message.
 A codex run's `stderr_tail` (in `status`) is its stderr without the notice Codex always prints, on any turn that left something there."""
@@ -145,7 +151,7 @@ class OneLinePerParagraph(argparse.HelpFormatter):
         return super()._format_action(action)
 
 
-VISIBLE = ("start", "resume", "batch", "status", "log", "result", "stop", "clean", "doctor")
+VISIBLE = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "doctor")
 
 
 class ArgumentError(Exception):
@@ -208,6 +214,13 @@ def build_parser():
     p.add_argument("--timeout", type=positive, metavar="SEC", help="stop this run after SEC seconds and record it timed_out")
     p.add_argument("--label", help="a short name for this run (default: the last run's label)")
     p.add_argument("--cwd", metavar="DIR", help="the directory to resume in (default: where it last ran); required for a session the registry never saw")
+    add_registry(p)
+
+    p = sub.add_parser("send", usage="cli.py send REF [MESSAGE | --message-file FILE] [--interrupt]", help="write a message into a live claude run", description=SEND_DESC, formatter_class=OneLinePerParagraph)
+    p.add_argument("ref", metavar="REF", help="a run id, a native id, or a unique prefix of either")
+    p.add_argument("message", nargs="?", metavar="MESSAGE", help="the message; or give --message-file, or pipe it on stdin")
+    p.add_argument("--message-file", metavar="FILE", help="read the message from FILE")
+    p.add_argument("--interrupt", action="store_true", help="priority `now`: end the running turn and start on this message")
     add_registry(p)
 
     p = sub.add_parser("batch", usage="cli.py batch --group NAME (--task PROMPT … | --tasks-file FILE) [--engine E --model M --effort E] [--worktree] [--profile P] [options]", help="start several runs, of one engine or both, as one named group", description=BATCH_DESC, epilog=BATCH_EPILOG, formatter_class=OneLinePerParagraph)
@@ -309,7 +322,7 @@ def emit(obj):
 
 def dispatch(args):
     c = args.command
-    if c in ("start", "resume", "batch", "stop", "clean"):
+    if c in ("start", "resume", "send", "batch", "stop", "clean"):
         # Before reading a prompt or the registry: inside a worker these commands are refused whatever their arguments.
         refuse_inside_worker()
     if c == "start":
@@ -324,6 +337,9 @@ def dispatch(args):
         reply = resume(ref=args.ref, engine=args.engine, prompt=read_text(args.prompt, args.prompt_file, "resume"), cwd=base_dir(args), flags=flags, label=args.label, timeout=args.timeout, runs_dir=args.runs_dir)
         emit(reply)
         return EXIT_REFUSED if reply.get("error") else 0
+    if c == "send":
+        emit(send(ref=args.ref, message=read_text(args.message, args.message_file, "send", "message"), interrupt=args.interrupt, cwd=base_dir(args), runs_dir=args.runs_dir))
+        return 0
     if c == "batch":
         defaults = {"engine": args.engine, "profile": args.profile, "model": args.model, "effort": args.effort, "schema": args.schema, "priority": args.priority, "timeout": args.timeout, "cwd": run_flags(args)["cwd"]}
         if args.schema and not Path(args.schema).expanduser().is_file():

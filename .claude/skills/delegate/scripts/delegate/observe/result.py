@@ -24,6 +24,8 @@ def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=N
         if wait_timeout:
             args += ["--wait-timeout", f"{wait_timeout:g}"]
         header["next"] = {"command": invocation(*args), "run_in_background": True, "why": "waits again, for the end or for attention that is new"}
+    if wait_reason:
+        header["returned_because"] = wait_reason
     if wait_reason == "timeout":
         header["note"] = "--wait-timeout passed before the run ended; " + header.get("note", "")
     if snap["schema"]:
