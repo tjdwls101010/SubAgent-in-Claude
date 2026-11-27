@@ -14,7 +14,7 @@ from pathlib import Path
 from delegate.claude_cli import EFFORTS, PROFILES, worktree_location, VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
 from delegate.git import branch_exists, main_checkout, startup_snapshot, toplevel
-from delegate.registry import TERMINAL, close, enqueue, registry_args, supervisor_alive, take, update_meta, worker_alive
+from delegate.registry import TERMINAL, close, enqueue, is_live, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
@@ -153,11 +153,61 @@ def reply_fields(meta):
 
 
 def live_instead(run_id, meta, runs_dir):
-    """What to do instead of starting another run on a session that has a live one: wait for it to end, or stop it first."""
+    """What to do instead of starting another run on a session that has a live one: send to it while its stdin is open, otherwise stop it first."""
     extra = registry_args(runs_dir)
-    if supervisor_alive(meta) and meta.get("state") not in TERMINAL:
-        return {"instead": invocation("result", "--run", run_id, "--wait", *extra), "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run is live; resume once it has ended"}
-    return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run's supervisor is gone while claude still runs"}
+    if meta.get("state") in ("starting", "running") and meta.get("stdin_open") and supervisor_alive(meta):
+        return {"instead": invocation("send", run_id, "<message>", *extra), "why": "the run is live and still reading messages"}
+    return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run is finishing or its supervisor is gone while claude still runs"}
+
+
+SEND_LIMIT = 16
+
+
+def send_instead(run_id, meta, runs_dir):
+    """What to do instead of a send the run cannot take: never pointing back at send."""
+    state = meta.get("state")
+    extra = registry_args(runs_dir)
+    if state == "finishing":
+        return {"instead": invocation("result", "--run", run_id, "--wait", *extra), "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the answer is already in and stdin is closed"}
+    if state in TERMINAL and not worker_alive(meta):
+        # A newer run of the same session may be live; resume would be refused for it, so point at that run instead.
+        newest_dir = newest_on(runs_dir, NAME, meta["native_id"]) if meta.get("native_id") else None
+        newest = reap(newest_dir) if newest_dir else meta
+        if newest.get("run_id") != run_id and is_live(newest):
+            if newest.get("state") in ("starting", "running") and newest.get("stdin_open") and supervisor_alive(newest):
+                return {"instead": invocation("send", newest["run_id"], "<message>", *extra), "why": f"run {run_id} has ended, but its session goes on in the live run {newest['run_id']}"}
+            return send_instead(newest["run_id"], newest, runs_dir)
+        return {"instead": invocation("resume", run_id, "<message>", *extra), "why": "the run has ended; resume continues its session"}
+    return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run's supervisor is gone or its stdin is closed"}
+
+
+def send(run_dir, meta, message, *, interrupt, runs_dir):
+    """Queue `message` for a live run whose supervisor still holds stdin open, and wait briefly for the supervisor to write it. `interrupt` sends it with priority `now`, which ends the running turn; otherwise `next`, read once the running tools finish."""
+    import time as _time
+
+    run_id = meta["run_id"]
+    if meta.get("state") in TERMINAL or not meta.get("stdin_open") or not supervisor_alive(meta):
+        raise Refusal(f"run {run_id} is {meta.get('state')} and no longer reads messages", run_id=run_id, state=meta.get("state"), **send_instead(run_id, meta, runs_dir))
+    uid = str(uuidlib.uuid4())
+    priority = "now" if interrupt else "next"
+    why = enqueue(run_dir, uid, message, priority=priority, kind="send", limit=SEND_LIMIT)
+    if why == "closed":
+        meta = reap(run_dir)
+        raise Refusal(f"run {run_id} closed its stdin before the message could be queued", run_id=run_id, state=meta.get("state"), **send_instead(run_id, meta, runs_dir))
+    if why == "limit":
+        raise Refusal(f"run {run_id} already took {SEND_LIMIT} messages, the most one run accepts", run_id=run_id, instead=f"{invocation('result', '--run', run_id, '--wait', *registry_args(runs_dir))}, then resume", why="start another turn with resume once this run ends")
+    end = now() + timings()["send_wait"]
+    delivered = False
+    while now() < end:
+        m = next((x for x in read_meta(run_dir).get("messages") or [] if x.get("uuid") == uid), None)
+        if m and m.get("delivered_at"):
+            delivered = True
+            break
+        _time.sleep(0.05)
+    reply = {"run_id": run_id, "engine": NAME, "message_uuid": uid, "priority": priority, "delivered": delivered}
+    if not delivered:
+        reply["note"] = "queued but not yet written to the worker; `status --run` shows it under `undelivered` if the supervisor dies first"
+    return reply
 
 
 def is_worker_command(command):

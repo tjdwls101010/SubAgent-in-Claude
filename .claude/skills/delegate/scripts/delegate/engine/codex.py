@@ -196,6 +196,13 @@ def live_instead(run_id, meta, runs_dir):
     return {"instead": invocation("result", "--run", run_id, "--wait", *extra), "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "two turns on one thread would append to one rollout; this skill's codex runs take no message mid-turn"}
 
 
+def send(run_dir, meta, message, *, interrupt, runs_dir):
+    """A Codex turn run through `codex exec` takes no message while it runs: wait for it, or stop it and resume with the message."""
+    extra = registry_args(runs_dir)
+    run_id = meta["run_id"]
+    raise Refusal(f"run {run_id} is a codex turn, which takes no message while it runs", run_id=run_id, state=meta.get("state"), instead=invocation("result", "--run", run_id, "--wait", *extra), **{"or": f"{invocation('stop', '--run', run_id, *extra)}, then {invocation('resume', run_id, '<message>', *extra)}"}, why="this skill runs codex through `codex exec`, which has no way in for a message mid-turn; wait for the answer, or stop the turn (its thread stays resumable) and resume with the message")
+
+
 def is_worker_command(command):
     return "codex" in (command or "") and "exec" in (command or "")
 

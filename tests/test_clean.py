@@ -70,7 +70,6 @@ class Clean(Worktrees):
         self.assertTrue(forced["name_released"])
         self.assertEqual(len(forced["removed"]), 4)
 
-    @unittest.skip("send comes with PR ④")
     def test_a_later_init_does_not_turn_worker_files_into_startup_artifacts(self):
         reply = self.cli_json("batch", *CLAUDE_RUN, "--group", "late", "--worktree", "--task", "x [[fake:write:made.txt]] [[fake:sleep:10]]", timeout=120)
         run = reply["runs"][0]["run_id"]
