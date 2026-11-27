@@ -337,3 +337,26 @@ class NextCommand(Sandbox):
     def test_plain_next_has_no_registry_flag(self):
         reply = self.start("hi")
         self.assertNotIn("--runs-dir", reply["next"]["command"])
+
+
+class InputErrors(Sandbox):
+    def test_a_timeout_must_be_finite(self):
+        for value in ("nan", "inf", "0", "-1"):
+            with self.subTest(value=value):
+                self.assertEqual(self.cli_json("start", *CLAUDE_RUN, "x", "--timeout", value, expect=2)["help"], "start --help")
+
+    def test_a_prompt_file_that_is_not_utf8_is_a_command_line_to_change(self):
+        bad = self.root / "bad.txt"
+        bad.write_bytes(b"\xff\xfe not text")
+        out = self.cli_json("start", *CLAUDE_RUN, "--prompt-file", str(bad), expect=2)
+        self.assertIn("not UTF-8", out["error"])
+        out = self.cli_json("start", *CLAUDE_RUN, "x", "--schema", str(bad), expect=2)
+        self.assertIn("not UTF-8", out["error"])
+
+    def test_inside_a_worker_resume_and_stop_are_refused_before_anything_is_read(self):
+        env = {"DELEGATE_RUN": "20261128-000000-outer-0000"}
+        for args in (("resume", "no-such-ref", "x"), ("stop", "--run", "no-such-ref"), ("start", *CLAUDE_RUN, "x")):
+            with self.subTest(args=args[0]):
+                out = self.cli_json(*args, expect=1, env=env)
+                self.assertEqual(out["inside_run"], "20261128-000000-outer-0000")
+

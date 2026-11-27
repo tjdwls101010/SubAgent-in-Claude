@@ -46,6 +46,12 @@ class Doctor(Sandbox):
         self.assertTrue(d["ok"], d["blockers"])
         self.assertTrue(d["registry"]["writable"])
 
+    def test_a_registry_that_is_a_file_is_a_blocker(self):
+        f = self.root / "regfile"
+        f.write_text("")
+        d = self.cli_json("doctor", "--runs-dir", str(f), expect=3, timeout=120)
+        self.assertTrue(any("cannot be written" in b for b in d["blockers"]))
+
     def test_registry_live_runs(self):
         live = self.start("x [[fake:sleep:30]]")
         d = self.doctor()

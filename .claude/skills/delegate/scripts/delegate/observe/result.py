@@ -5,14 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from delegate.registry import find_run, registry_args, resolve_runs_dir
+from delegate.registry import find_run, registry_args, resolve_runs_dir, worker_alive
 from delegate.util import invocation
 
 from .snapshot import snapshot_of
 from .wait import wait
-
-SCHEMA_KEYS = ("run_id", "engine", "native_id", "state", "exit_code", "error", "attention", "permission_denials", "files_changed", "cost_usd")
-
 
 def registry_of(run_dir):
     return str(Path(run_dir).parent)
@@ -21,7 +18,7 @@ def registry_of(run_dir):
 def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=None):
     snap = snapshot_of(run_dir, attention_override=wait_attention)
     meta, header, text = snap["meta"], snap["header"], snap["text"]
-    if snap["live"]:
+    if snap["live"] or worker_alive(meta):
         args = ["result", "--run", meta["run_id"], "--wait", *registry_args(registry_of(run_dir))]
         if wait_timeout:
             args += ["--wait-timeout", f"{wait_timeout:g}"]
@@ -29,11 +26,8 @@ def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=N
     if wait_reason == "timeout":
         header["note"] = "--wait-timeout passed before the run ended; " + header.get("note", "")
     if snap["schema"]:
-        doc = {k: header[k] for k in SCHEMA_KEYS if k in header}
-        if "note" in header:
-            doc["note"] = header["note"]
-        if "next" in header:
-            doc["next"] = header["next"]
+        # The whole header, then the structured output in place of the text.
+        doc = dict(header)
         doc["json"] = snap["json"]
         if not snap["live"] and snap["json"] is None:
             # Read, so not a refusal: the run ended without the structured output its schema asked for, and its text is what there is.

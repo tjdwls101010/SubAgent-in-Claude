@@ -109,6 +109,8 @@ class Schema(Sandbox):
         doc = json.loads(proc.stdout)
         self.assertEqual(doc["json"], {"a": 1})
         self.assertEqual(doc["state"], "completed")
+        for field in ("usage", "answered", "files_changed", "engine", "native_id"):
+            self.assertIn(field, doc, "the document carries the whole header")
         self.assertTrue(proc.stdout.startswith("{\n"))
         argv = [c for c in self.fake_calls() if "-p" in c["argv"]][0]["argv"]
         self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]), json.loads(schema.read_text()))

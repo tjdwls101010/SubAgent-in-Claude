@@ -23,7 +23,7 @@ from delegate.doctor import doctor
 from delegate.engine import ENGINES, PROFILES, supervise
 from delegate.errors import Refusal
 from delegate.observe import LISTING_ROWS, STALL_SECONDS, log, result, status
-from delegate.runs import resume, start, stop
+from delegate.runs import refuse_inside_worker, resume, start, stop
 
 EXIT_REFUSED, EXIT_ARGUMENTS, EXIT_BLOCKED = 1, 2, 3
 
@@ -46,8 +46,8 @@ MODEL_HELP = "the model, as the engine names it: for claude an alias or a full m
 EFFORT_HELP = "the reasoning effort, as the engine takes it: claude low, medium, high, xhigh or max. Required for a new run — there is no default effort"
 
 RUN_EPILOG = """\
-Answers once the engine confirms the start (claude: its first init), up to 15 s, so a start that fails at once — not logged in, a bad flag, an engine too old — says so here. A detached supervisor drives the run, so it outlives this command and nothing announces its end: run the reply's `next.command` in the background; it returns when the run ends or needs attention, and prints the result.
-A claude worker inherits your whole Claude Code environment — CLAUDE.md files, skills, hooks, plugins, MCP servers, memory — under the profile's restrictions, with background tasks off so its turn ending is the run ending, and without the tools that start or message other agents. Every worker is told nobody can answer it, that its final message is what you receive, to leave git commits, branches, pushes and merges to you unless the prompt asks, and that it cannot start workers: inside a worker this skill refuses to start, stop or resume runs."""
+Answers once the engine confirms the start (claude: its first init), or after 15 s with `state: starting` and a `note`, so a start that fails at once — not logged in, a bad flag, an engine too old — says so here. A detached supervisor drives the run, so it outlives this command and nothing announces its end: run the reply's `next.command` in the background; it returns when the run ends or needs attention, and prints the result.
+A claude worker inherits your whole Claude Code environment — CLAUDE.md files, skills, hooks, plugins, MCP servers, memory — under the profile's restrictions, with background tasks off so its turn ending is the answer (a tool still running after it is shown as `finishing` until the process exits), and without the tools that start or message other agents. Every worker is told nobody can answer it, that its final message is what you receive, to leave git commits, branches, pushes and merges to you unless the prompt asks, and that it cannot start workers: inside a worker this skill refuses to start, stop or resume runs."""
 
 START_DESC = """\
 Start a fresh worker on PROMPT, detached.
@@ -140,12 +140,14 @@ class Parser(argparse.ArgumentParser):
 
 
 def positive(text):
+    import math
+
     try:
         value = float(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{text!r} is not a number")
-    if value <= 0:
-        raise argparse.ArgumentTypeError("must be positive")
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive, finite number")
     return value
 
 
@@ -222,10 +224,15 @@ def read_text(value, path, command, what="prompt"):
             text = Path(path).expanduser().read_text(encoding="utf-8")
         except OSError as e:
             raise Refusal(f"{flag} {path}: {e.strerror or e}", arguments=True, help=f"{command} --help")
+        except UnicodeDecodeError as e:
+            raise Refusal(f"{flag} {path} is not UTF-8 text: {e}", arguments=True, help=f"{command} --help")
     elif value is not None:
         text = value
     elif not sys.stdin.isatty():
-        text = sys.stdin.read()
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise Refusal(f"the {what} on stdin is not UTF-8 text: {e}", arguments=True, help=f"{command} --help")
     else:
         text = ""
     if not text.strip():
@@ -253,6 +260,9 @@ def emit(obj):
 
 def dispatch(args):
     c = args.command
+    if c in ("start", "resume", "stop"):
+        # Before reading a prompt or the registry: inside a worker these commands are refused whatever their arguments.
+        refuse_inside_worker()
     if c == "start":
         if not args.engine:
             raise Refusal("--engine is required: there is no default engine", arguments=True, help="start --help")
