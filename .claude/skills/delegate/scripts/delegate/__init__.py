@@ -6,6 +6,7 @@ Features (one per reason to change):
     batch/       several runs, of any engines, as one named group: their slots, checkouts of their own, and clean
     observe/     status, log and result, including `result --wait` and the attention that ends a wait early; `snapshot` and `wait_ended` for callers that read a run without parsing text
     doctor.py    the environment a run would start in, per engine
+    models.py    the models and efforts each engine offers now, and its account's limits
 
 Systems (formats someone else owns):
     claude_cli/  everything about the Claude Code CLI: argv and profiles, the worker's environment, stream-json in and out, version, auth, settings files
@@ -19,5 +20,5 @@ Shared:
     errors.py    Refusal, the one error a command turns into an exit code
     util.py      time, text trimming, process liveness, the skill's own invocation string, timings
 
-Imports run feature → store → system → shared; the edges between features are runs → engine, observe → engine, doctor → engine, batch → runs and batch → engine; only engine/ imports claude_cli/ and codex_cli/.
+Imports run feature → store → system → shared; the edges between features are runs → engine, observe → engine, doctor → engine, models → engine, batch → runs and batch → engine; only engine/ imports claude_cli/ and codex_cli/.
 """
