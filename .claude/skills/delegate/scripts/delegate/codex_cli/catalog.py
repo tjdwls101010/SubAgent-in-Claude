@@ -103,6 +103,7 @@ def model_catalog():
             out.append({
                 "slug": m["slug"],
                 "display_name": m.get("display_name"),
+                "description": m.get("description"),
                 "default_effort": m.get("default_reasoning_level"),
                 "efforts": [lv["effort"] for lv in (levels if isinstance(levels, list) else [])
                             if isinstance(lv, dict) and lv.get("effort")],

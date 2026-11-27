@@ -9,7 +9,7 @@ import unittest
 
 from support.harness import CLAUDE_RUN, ENTRY, Sandbox, build_parser
 
-COMMANDS = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "doctor")
+COMMANDS = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "models", "doctor")
 
 
 def run(*args):

@@ -50,7 +50,7 @@ class MixedGroupWaits(Sandbox):
         return header_of(proc)
 
     def test_claude_attention_returns_while_codex_runs(self):
-        f = self.tasks({"prompt": "c [[fake:silent:1]] [[fake:ratelimit_late:rejected]] [[fake:sleep:30]]", "engine": "claude", "model": "m", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
+        f = self.tasks({"prompt": "c [[fake:silent:1]] [[fake:ratelimit_late:rejected]] [[fake:sleep:30]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
         self.cli_json("batch", "--group", "att", "--tasks-file", f, timeout=120, env={"FAKE_CODEX_HANG": "60"})
         header = self.wait_group("att")
         self.assertEqual(header["returned_because"], "attention")
@@ -59,7 +59,7 @@ class MixedGroupWaits(Sandbox):
         self.cli_json("stop", "--group", "att", timeout=120)
 
     def test_a_member_that_fails_returns_the_wait_once(self):
-        f = self.tasks({"prompt": "c [[fake:error]]", "engine": "claude", "model": "m", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
+        f = self.tasks({"prompt": "c [[fake:error]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
         self.cli_json("batch", "--group", "mf", "--tasks-file", f, timeout=120, env={"FAKE_CODEX_HANG": "8"})
         header = self.wait_group("mf")
         self.assertEqual(header["returned_because"], "member_failed")
@@ -71,7 +71,7 @@ class MixedGroupWaits(Sandbox):
         self.assertEqual([m["state"] for m in again["members"]], ["failed", "completed"])
 
     def test_a_codex_member_that_fails_while_claude_runs(self):
-        f = self.tasks({"prompt": "c [[fake:sleep:30]]", "engine": "claude", "model": "m", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
+        f = self.tasks({"prompt": "c [[fake:sleep:30]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
         # The codex turn fails a few seconds after it started, once the wait is under way: a failure already there when a wait begins does not end it.
         self.cli_json("batch", "--group", "cf", "--tasks-file", f, timeout=120, env={"FAKE_CODEX_FIXTURE": str(CODEX_FIXTURES / "turn-failed.jsonl"), "FAKE_CODEX_EXIT": "1", "FAKE_CODEX_DELAY": "1.5"})
         header = self.wait_group("cf")

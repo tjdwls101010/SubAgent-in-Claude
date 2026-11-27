@@ -23,6 +23,7 @@ from delegate.batch import TASK_FIELDS, batch, clean
 from delegate.doctor import doctor
 from delegate.engine import ENGINES, PROFILES, supervise
 from delegate.errors import Refusal
+from delegate.models import models
 from delegate.observe import GROUP_MESSAGE_CAP, LISTING_ROWS, STALL_SECONDS, log, result, status
 from delegate.runs import refuse_inside_worker, resume, send, start, stop
 
@@ -43,7 +44,7 @@ PROFILE_HELP = """what the worker may do (default write). The names are shared b
 For claude the profile is a restriction laid over your own Claude Code settings, not a replacement: settings that widen it are listed in the reply's `profile_exceptions`."""
 
 ENGINE_HELP = "the engine to run on: codex (GPT through the Codex CLI) or claude (headless Claude Code). Required — there is no default engine"
-MODEL_HELP = "the model, as the engine names it: for codex a slug from its catalog (`codex debug models`), checked before the run starts when the catalog can be read; for claude an alias or a full model id that `claude -p /model` accepts. A model in the catalog can still be one your account cannot use: its first turn fails with the engine's error. Required for a new run — there is no default model"
+MODEL_HELP = "the model, as the engine names it — `models` lists them: for codex a slug from its catalog, for claude an alias or a full model id (claude-…); a new choice is checked before the run starts when the list can be read. A model in the catalog can still be one your account cannot use: its first turn fails with the engine's error. Required for a new run — there is no default model"
 EFFORT_HELP = "the reasoning effort, as the engine takes it: codex the efforts the model's catalog entry lists; claude low, medium, high, xhigh or max. Required for a new run — there is no default effort"
 PRIORITY_HELP = "codex only: request service_tier \"priority\" (Fast mode), recorded for the thread's later turns; any other engine refuses it"
 
@@ -54,13 +55,13 @@ A codex worker is isolated: Codex does not load your config.toml, so no MCP serv
 START_DESC = """\
 Start a fresh worker on PROMPT, detached.
 Prints: one JSON line — `run_id`, `engine`, `native_id` (the engine's own id for the conversation: a Codex thread id, null until Codex reports it, or a Claude session id), `state`, `next` (the `result --run <id> --wait` call to run in the background), `profile`, `model`, `effort`, `cwd`, `concurrent_writers` (other live runs of any engine that can write in or around the same directory), `events` (the raw event file), and the engine's own fields — codex: `sandbox`, `isolated`, `read_only` and `read_only_note` for a read-only run, `service_tier`; claude: `permission_mode` (what claude reported), `mode_mismatch`, `profile_exceptions`; `error` and `stderr_tail` instead of `next` when the run failed while starting.
-Exits: 0 started; 1 refused or failed — run from inside a worker, the engine missing or too old, or the run ended before the engine confirmed it (`error` says why) — a run that fails after the confirmation answers 0, and `result` reports the failure; 2 the command line must change — no --engine, --model or --effort, a model or effort the engine does not take (codex: not in the catalog), --priority for an engine other than codex, no prompt or an empty one, an unreadable --prompt-file or --schema, a --cwd that is not a directory, or anything else the parser refuses."""
+Exits: 0 started; 1 refused or failed — run from inside a worker, the engine missing or too old, the engine's account limit known to be used up (`error: quota_exhausted` with `resets_at`, `observed_at` and the `instead` that hands the work to the other engine; a reading that is old, of another scope or missing never refuses), or the run ended before the engine confirmed it (`error` says why) — a run that fails after the confirmation answers 0, and `result` reports the failure; 2 the command line must change — no --engine, --model or --effort, a model or effort the engine does not take (codex: not in the catalog), --priority for an engine other than codex, no prompt or an empty one, an unreadable --prompt-file or --schema, a --cwd that is not a directory, or anything else the parser refuses."""
 
 RESUME_DESC = """\
 Run another turn on an existing session or thread, detached: a new run with its own events, under the profile, model, effort and schema its last run recorded, except where a flag changes them — every turn re-sends them, because a resumed `claude -p` restores only the model and `codex exec resume` takes no sandbox or directory flag. Continue when the new work builds on what the worker worked out; start fresh when it does not. A conversation does not cross engines: to hand work to the other engine, start a fresh run there in the same --cwd and put what `result` printed for the previous run into its prompt.
 For a session the registry never saw, give --engine, --profile, --cwd (the directory it ran in: Claude Code finds a session by its project directory; for a session that ran in a Claude Code worktree, the directory it was launched from and the worktree both work, and claude re-enters the worktree) and, for codex, --model and --effort (an isolated run reads no config.toml), for claude --effort (a resumed session does not keep it: without one it runs at another effort than it had); claude keeps the session's model unless --model changes it.
 Prints: one JSON line as `start` prints, plus `profile_changed_from` when --profile changed it, and `note` for a session the registry never saw.
-Exits: 0 started; 1 refused or failed — the session has a live run (`instead` says what to do), run from inside a worker, the engine missing or too old, a run with no native id, or the run failed before the engine confirmed it (a session the engine does not know fails here); 2 the command line must change — no REF, no prompt or an empty one, an --engine other than the one the run recorded (`instead` gives the two commands that hand the work over), an unknown REF without --engine, a session or thread the registry never saw without --profile, --cwd, (codex) --model and --effort or (claude) --effort, a model or effort the engine does not take, or anything else the parser refuses."""
+Exits: 0 started; 1 refused or failed — the session has a live run (`instead` says what to do), run from inside a worker, the engine missing or too old, a fresh reading shows the engine's limit used up (`error: quota_exhausted` with `resets_at` and `instead`), a run with no native id, or the run failed before the engine confirmed it (a session the engine does not know fails here); 2 the command line must change — no REF, no prompt or an empty one, an --engine other than the one the run recorded (`instead` gives the two commands that hand the work over), an unknown REF without --engine, a session or thread the registry never saw without --profile, --cwd, (codex) --model and --effort or (claude) --effort, a model or effort the engine does not take, or anything else the parser refuses."""
 
 SEND_DESC = """\
 Write a message into a live claude run while it works, to correct or extend what it is doing. By default the message has priority `next`: Claude Code reads it once the tools it is running finish, in the same turn or, if the turn ends first, as the next one. --interrupt sends it with priority `now`, which ends the running turn and starts on the message. The run ends once every message has been answered. A codex run takes no message mid-turn (this skill runs it through `codex exec`): the refusal's `instead` says to wait for it, or stop it and resume with the message.
@@ -98,6 +99,7 @@ States:
   failed       ended: the engine exited non-zero, the answer is an error, or (claude) a hook ended the only message (`error` says which)
   interrupted  ended: stopped
   timed_out    ended: its --timeout passed
+  quota_exhausted  ended: the engine's account limit was used up (`resets_at` says until when; `result` gives the `instead` that hands the work to the other engine)
   orphaned     ended: its supervisor died without recording an outcome; `still_writing` says the worker is still running
 A group's `group_state` is `running` while any member is live, `completed` when every member completed, and `partial` otherwise — a failure, a stop, a timeout or a member that never started.
 `attention` lists what needs a look now: `stalled`; claude also `retrying` for 120 s, `rate_limited` (a rejected rate limit), `finishing` for 120 s, `possibly_blocked`."""
@@ -116,6 +118,7 @@ RESULT_EPILOG = f"""\
 --wait on a group returns when every member has ended, any member has new attention, or a member ends in failure while others still run (`member_failed`: worth stopping or redirecting the rest — say, a codex member that ran out of its limit); it waits on the members the group had when the wait began, and what was already there then (a member already failed, attention already shown) does not end it again.
 The header's `returned_because` (with --wait) is `ended`, `attention`, `member_failed` or `timeout`. --wait returns when the run ends, or early when attention appears that was not there when it began: no event for {STALL_SECONDS} s (`stalled`), and for claude API retries for 120 s (`retrying`), a rejected rate limit (`rate_limited`), claude still running 120 s after the answer (`finishing`), or a turn that ended with no reply and no hook notice (`possibly_blocked`). The header's `attention` says which, with what the run was doing; its `next` waits again for something new. Nothing is stopped for it.
 `files_changed` lists the paths the engine's events say it changed (codex: its file_change events, relative to the run's directory; claude: Edit, Write and NotebookEdit calls); files a shell command wrote are not in it.
+A run that ended `quota_exhausted` carries `resets_at`, `instead` (a start on the other engine in the same directory) and `why` in its header.
 A codex run's final message is the file Codex wrote at the end (`-o`); without one (a run stopped or failed before it), or while it runs, the latest agent message.
 A codex run's `stderr_tail` (in `status`) is its stderr without the notice Codex always prints, on any turn that left something there."""
 
@@ -125,9 +128,14 @@ With --group, the run each slot of the group started.
 Prints: one JSON line — `stopped`, an entry per run with `run_id`, `engine`, `native_id`, `signals_sent` and `state` (`interrupted` for a run that was live; one that had ended keeps its state, with `note`).
 Exits: 0 every run was tried; 1 refused — run from inside a worker, or no such run or group; 2 the command line must change — neither or both of --run and --group."""
 
+MODELS_DESC = """\
+What can be chosen now, per engine, read from the engines themselves at the time of the call — no model is called: codex's catalog (`codex debug models`) and claude's aliases (`claude -p /model`, each the newest of its family; a full model id `claude-…` is accepted too), and each account's usage limits as they stand.
+Prints: one JSON line — `engines`, per engine `models` (codex: `slug`, `display_name`, `description`, `efforts`, `default_effort`, `context_window`, `visibility` — `hide` is a model the catalog keeps out of its own lists; claude: `alias`), claude's `efforts`, `source`, `error` when the list could not be read, and `quota` (`state` ok, exhausted or unknown, `scope`, `windows` or `limits` with `used_percent` and `resets_at`, `resets_at` when exhausted, `observed_at`, `source`); and `note`.
+Exits: 0 printed, whatever could not be read (it says so); 2 an argument the parser refuses."""
+
 DOCTOR_DESC = """\
 The environment a run would start in, checked without starting a worker: Python; per engine its CLI on PATH and version against the floor the skill needs, login, what its sandboxed profiles need on this platform, and settings in your files that widen them; and the registry with its live runs.
-Prints: one JSON line — `ok`, `blockers`, `warnings` (each prefixed with its engine), `python`, `engines` (per engine `ok`, `blockers`, `warnings` and its report — codex: `path`, `installed`, `version`, `isolation`, `read_only_scratch`, `login` (`ok`, `cause`, `detail`), `codex_home`, `codex_home_from_env`, `config` (`path`, `sandbox_mode`, `approval_policy` — which runs do not read); claude: `path`, `version`, `floor`, `verified`, `auth` (`loggedIn`, `authMethod`, `subscriptionType`, `apiProvider`), `sandbox` (`platform`, `supported`, `missing`), `profile_exceptions` per profile), `skill_dir`, `entry`, `invocation` (the command form the pre-approval matches), `registry` (`path`, `exists`, `writable`, `live_runs`, `groups`, `worktrees` — every checkout a group made that git still records, with the `group` it belongs to).
+Prints: one JSON line — `ok`, `blockers`, `warnings` (each prefixed with its engine), `python`, `engines` (per engine `ok`, `blockers`, `warnings` and its report — each with `quota` as `models` prints it; codex: `path`, `installed`, `version`, `isolation`, `read_only_scratch`, `login` (`ok`, `cause`, `detail`), `codex_home`, `codex_home_from_env`, `config` (`path`, `sandbox_mode`, `approval_policy` — which runs do not read); claude: `path`, `version`, `floor`, `verified`, `auth` (`loggedIn`, `authMethod`, `subscriptionType`, `apiProvider`), `sandbox` (`platform`, `supported`, `missing`), `profile_exceptions` per profile), `skill_dir`, `entry`, `invocation` (the command form the pre-approval matches), `registry` (`path`, `exists`, `writable`, `live_runs`, `groups`, `worktrees` — every checkout a group made that git still records, with the `group` it belongs to).
 Exits: 0 no blocker; 3 a blocker would stop every run of an engine checked — its CLI too old or not logged in, Python below 3.11, a registry that cannot be written; an engine whose CLI is not installed is a blocker only when --engine names it, and a warning otherwise (its own `ok` stays false), but no engine installed at all is a blocker; 2 an argument the parser refuses."""
 
 
@@ -151,7 +159,7 @@ class OneLinePerParagraph(argparse.HelpFormatter):
         return super()._format_action(action)
 
 
-VISIBLE = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "doctor")
+VISIBLE = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "models", "doctor")
 
 
 class ArgumentError(Exception):
@@ -267,6 +275,10 @@ def build_parser():
     p.add_argument("--force", action="store_true", help="also remove checkouts holding uncommitted, untracked or ignored work, discarding it; live work, unreadable members, commits no branch holds and branches with commits are still kept")
     add_registry(p)
 
+    p = sub.add_parser("models", usage="cli.py models [--engine E]", help="the models and efforts each engine offers now, and its account's limits", description=MODELS_DESC, formatter_class=OneLinePerParagraph)
+    p.add_argument("--engine", choices=tuple(ENGINES), help="only this engine (default: every engine)")
+    add_registry(p)
+
     p = sub.add_parser("doctor", usage="cli.py doctor [--engine E] [--project DIR]", help="check the environment a run would start in", description=DOCTOR_DESC, formatter_class=OneLinePerParagraph)
     p.add_argument("--engine", choices=tuple(ENGINES), help="check only this engine (default: every engine)")
     add_registry(p)
@@ -362,6 +374,9 @@ def dispatch(args):
         return 0
     if c == "stop":
         emit(stop(refs=args.run or [], group=args.group, cwd=base_dir(args), runs_dir=args.runs_dir))
+        return 0
+    if c == "models":
+        emit(models(cwd=base_dir(args), engine=args.engine, runs_dir=args.runs_dir))
         return 0
     if c == "doctor":
         reply = doctor(cwd=base_dir(args), engine=args.engine, runs_dir=args.runs_dir)

@@ -35,8 +35,8 @@ CLAUDE_FIXTURES = FIXTURES / "claude"
 CODEX_FIXTURES = FIXTURES / "codex"
 
 TERMINAL = ("completed", "failed", "interrupted", "timed_out", "orphaned", "quota_exhausted")
-# What a test run names when it starts a claude worker: the fake accepts any model, and a new run must name one.
-CLAUDE_RUN = ("--engine", "claude", "--model", "test-model", "--effort", "high")
+# What a test run names when it starts a claude worker: a full model id (claude-…), which needs no alias list, since a new run must name one.
+CLAUDE_RUN = ("--engine", "claude", "--model", "claude-test-model", "--effort", "high")
 # The same for a codex worker: a model and effort the fake codex's catalog offers.
 CODEX_RUN = ("--engine", "codex", "--model", "fake-big", "--effort", "high")
 # Short timings so lifecycle tests do not wait out production grace periods; the skill reads this one variable and nothing else changes.

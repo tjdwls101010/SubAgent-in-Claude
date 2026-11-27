@@ -120,3 +120,35 @@ def quota(env):
     if parsed is None:
         return {"error": f"claude -p /usage gave no usage report (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[-300:]}"}
     return parsed
+
+
+_AVAILABLE = re.compile(r"Available:\s*(?P<list>.+?)(?:,\s*or a full model ID)?\.?\s*$", re.S)
+_MODEL_CACHE = []
+
+
+def parse_model_list(text):
+    """The aliases `/model` names after `Available:`, or None when the text does not say."""
+    m = _AVAILABLE.search(text or "")
+    if not m:
+        return None
+    items = [x.strip().strip("`") for x in m.group("list").split(",")]
+    return [x for x in items if x and not x.startswith("or ")]
+
+
+def model_aliases(env=None):
+    """The model aliases this Claude Code accepts, from `claude -p /model` in safe mode (no model call, no session file), asked once per process; None when they cannot be read. A full model id (`claude-…`) is accepted besides these."""
+    import json
+
+    if _MODEL_CACHE:
+        return _MODEL_CACHE[0]
+    _MODEL_CACHE.append(None)
+    path = shutil.which("claude", path=(env or os.environ).get("PATH"))
+    if not path:
+        return None
+    try:
+        proc = subprocess.run([path, "-p", "--safe-mode", "--no-session-persistence", "--output-format", "json", "/model"], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+        text = json.loads(proc.stdout).get("result") if proc.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        text = None
+    _MODEL_CACHE[0] = parse_model_list(text)
+    return _MODEL_CACHE[0]

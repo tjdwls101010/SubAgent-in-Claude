@@ -11,10 +11,10 @@ import threading
 import uuid as uuidlib
 from pathlib import Path
 
-from delegate.claude_cli import EFFORTS, PROFILES, worktree_location, VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
+from delegate.claude_cli import EFFORTS, PROFILES, worktree_location, VERIFIED_VERSION, quota as usage_report, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, model_aliases, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
 from delegate.git import branch_exists, main_checkout, startup_snapshot, toplevel
-from delegate.registry import TERMINAL, close, enqueue, is_live, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
+from delegate.registry import TERMINAL, close, enqueue, is_live, iter_runs, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
@@ -72,6 +72,11 @@ def settings(flags, record=None, *, command="start", cwd=None):
         raise Refusal("--model is required: there is no default model; `claude -p /model` lists the aliases", arguments=True, help=f"{command} --help")
     if out["profile"] not in PROFILES:
         raise Refusal(f"unknown profile {out['profile']!r}", arguments=True, help=f"{command} --help")
+    if flags.get("model") and not flags["model"].startswith("claude-"):
+        aliases = model_aliases()
+        # A model taken up now is checked against what `/model` offers, when it can be read; one inherited from the session is not, and claude reports any other at its first init.
+        if aliases and flags["model"] not in aliases:
+            raise Refusal(f"model {flags['model']!r} is neither an alias claude offers nor a full model id (claude-…)", arguments=True, help=f"{command} --help", known_aliases=aliases, hint="`models --engine claude` lists them")
     if out["effort"] not in EFFORTS:
         raise Refusal(f"effort {out['effort']!r} is not one claude takes: {', '.join(EFFORTS)}", arguments=True, help=f"{command} --help", valid_efforts=list(EFFORTS))
     out["schema_text"] = read_schema(flags["schema"], command) if flags.get("schema") else record.get("schema_text")
@@ -449,6 +454,11 @@ class Driver:
         else:
             state, error = "completed", None
         fields.update({"state": state, "error": error})
+        with self.pump.lock:
+            rl = self.state.rate_limit
+        if state == "failed" and rl and rl.get("status") == "rejected":
+            # The account's limit, not the work.
+            fields.update({"state": "quota_exhausted", "resets_at": rl.get("resets_at")})
         return fields
 
 
@@ -558,6 +568,79 @@ def log_lines(v):
     return lines
 
 
+# -- models and limits ----------------------------------------------------------
+
+FRESH = 600.0
+
+
+def _resets(text):
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(text).timestamp() if isinstance(text, str) else text
+    except ValueError:
+        return None
+
+
+def quota_from_usage(report, model=None, at=None):
+    """`/usage` limits as the skill reports them, for a run on `model`: exhausted when a limit that applies to it (the account's, or one scoped to its model family) is used up and has not reset."""
+    at = at or now()
+    if not report or report.get("error"):
+        return {"state": "unknown", "scope": None, "limits": [], "observed_at": None, "source": None, "why": (report or {}).get("error") or "no usage report"}
+    limits = []
+    for item in report.get("limits") or []:
+        resets = _resets(item.get("resets_at"))
+        if resets and resets <= at:
+            continue
+        applies = not item.get("scope") or (model and item["scope"].lower() in model.lower())
+        limits.append({"kind": item.get("kind"), "used_percent": item.get("percent"), "resets_at": resets, "scope": item.get("scope"), "applies": bool(applies)})
+    # With extra usage on, Claude Code goes on past a full plan limit, paid.
+    full = [] if report.get("extra_usage_enabled") else [l for l in limits if l["applies"] and (l["used_percent"] or 0) >= 100]
+    out = {"state": "exhausted" if full else ("ok" if limits else "unknown"), "scope": "the account's limits" + (f" and those scoped to {model}" if model else ""), "limits": limits, "observed_at": at, "source": "claude -p /usage"}
+    if full:
+        out["resets_at"] = max(l["resets_at"] for l in full if l["resets_at"]) if any(l["resets_at"] for l in full) else None
+    return out
+
+
+def quota_from_event(rl, at=None):
+    """A `rate_limit_event` a run recorded, as the same shape: the account's state when the event came."""
+    at = at or now()
+    rejected = rl.get("status") == "rejected" and (rl.get("resets_at") or 0) > at
+    windows = [{"kind": k, "used_percent": round(rl[k] * 100) if isinstance(rl.get(k), (int, float)) else None} for k in ("five_hour", "seven_day")]
+    out = {"state": "exhausted" if rejected else "ok", "scope": "the account's limits", "windows": windows, "observed_at": rl.get("observed_at"), "source": "a run's rate_limit_event"}
+    if rejected:
+        out["resets_at"] = rl.get("resets_at")
+    return out
+
+
+_QUOTA = {}
+# The rate-limit types of a rate_limit_event that are the account's own windows, not one model family's.
+ACCOUNT_LIMITS = ("five_hour", "seven_day")
+
+
+def quota(model=None, runs_dir=None):
+    """The account's limits now: a rate-limit event a run of this registry recorded in the last 10 minutes (its scope is the account's), else `claude -p /usage`, which no model call answers."""
+    key = model or ""
+    if key in _QUOTA:
+        return _QUOTA[key]
+    at = now()
+    newest = None
+    if runs_dir:
+        for _, m in iter_runs(runs_dir):
+            rl = m.get("rate_limit")
+            # Only an event about the account's own windows speaks for every model; one about a model-scoped limit leaves the answer to /usage.
+            if m.get("engine") == NAME and rl and rl.get("observed_at") and at - rl["observed_at"] <= FRESH and rl.get("type") in (None, *ACCOUNT_LIMITS) and (newest is None or rl["observed_at"] > newest["observed_at"]):
+                newest = rl
+    _QUOTA[key] = quota_from_event(newest, at) if newest else quota_from_usage(usage_report(worker_env(dict(os.environ), {})), model, at)
+    return _QUOTA[key]
+
+
+def models():
+    """The aliases `claude -p /model` offers (each the newest of its family) and the efforts claude takes; a full model id (`claude-…`) is accepted too."""
+    aliases = model_aliases()
+    return {"models": [{"alias": a} for a in aliases] if aliases else None, "efforts": list(EFFORTS), "full_ids": "a full model id starting with claude- is accepted too", "source": "claude -p /model" if aliases else None, "error": None if aliases else "the model list could not be read (`claude -p /model`)"}
+
+
 # -- doctor -----------------------------------------------------------------
 
 
@@ -581,6 +664,12 @@ def diagnose(cwd):
         warnings.append(f"the read-only and write profiles' sandbox is not supported on {sandbox['platform']}; only full can run")
     elif sandbox["missing"]:
         warnings.append(f"the sandbox needs {', '.join(sandbox['missing'])}; read-only and write runs will fail to start until it is installed")
+    limits = quota_from_usage(usage_report(worker_env(dict(os.environ), {}))) if not info["error"] else {"state": "unknown", "limits": [], "why": "no claude"}
+    if limits.get("why") and not info["error"]:
+        warnings.append(f"usage limits could not be read: {limits['why']}")
+    for l in limits.get("limits") or []:
+        if (l.get("used_percent") or 0) >= 90:
+            warnings.append(f"claude {l['kind']} limit at {l['used_percent']}% (resets {iso(l.get('resets_at'))}); every claude worker draws on it")
     top = toplevel(cwd) or str(Path(cwd).resolve())
     roots = [r for r in {toplevel(cwd), main_checkout(cwd)} if r]
     exceptions = {p: profile_exceptions(top, p, project_roots=roots) for p in ("read-only", "write")}
@@ -588,6 +677,6 @@ def diagnose(cwd):
         for item in items:
             if item["setting"] in ("sandbox.excludedCommands", "sandbox.enabled", "unreadable settings file"):
                 warnings.append(f"claude {p}: {item['setting']} in {item['file']} — {item['effect']}")
-    report = {"path": info["path"], "installed": bool(info["path"]), "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
+    report = {"path": info["path"], "installed": bool(info["path"]), "quota": {**limits, "observed_at": iso(limits.get("observed_at")), "resets_at": iso(limits.get("resets_at"))}, "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
     return {"report": report, "blockers": blockers, "warnings": warnings}
 
