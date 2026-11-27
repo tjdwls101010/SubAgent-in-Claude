@@ -14,7 +14,7 @@ from pathlib import Path
 
 from delegate.errors import NotFound, Refusal
 from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, submodule_commits_only_here, unlock_and_remove
-from delegate.registry import find_run, group_view, is_live, iter_runs, publish_lock, read_meta, reap, registry_args, release_group, unreadable_runs
+from delegate.registry import find_run, group_view, is_live, iter_runs, publish_lock, reap, registry_args, release_group, unreadable_runs
 from delegate.util import invocation, pid_alive, process_command
 
 
