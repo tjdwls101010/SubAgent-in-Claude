@@ -54,11 +54,15 @@ def handover(engine_name, cwd, runs_dir):
     return {"instead": invocation("start", "--engine", other, "--model", "<model>", "--effort", "<effort>", "--cwd", cwd, "<prompt>", *registry_args(runs_dir)), "why": f"the {other} engine draws on another account's limits; it is another model family, which matters when this was to be an independent check"}
 
 
+# How old a limits reading may be and still refuse a start: a limit can reset, be raised or be paid past, and a start it refuses writes no new reading.
+QUOTA_FRESH = 600
+
+
 def refuse_exhausted(engine, settings, runs_dir, cwd):
     """Refuse a run on an engine whose account limit a fresh reading shows used up until a time still to come; anything less certain — no reading, an old one, another scope — lets the run start."""
     q = engine.quota(settings.get("model"), runs_dir)
-    resets = q.get("resets_at")
-    if q.get("state") == "exhausted" and resets and resets > now():
+    resets, observed = q.get("resets_at"), q.get("observed_at")
+    if q.get("state") == "exhausted" and resets and resets > now() and observed and now() - observed <= QUOTA_FRESH:
         raise Refusal("quota_exhausted", detail=f"the {engine.NAME} limit ({q.get('scope')}) is used up until {iso(resets)}", engine=engine.NAME, resets_at=iso(resets), observed_at=iso(q.get("observed_at")), source=q.get("source"), **handover(engine.NAME, cwd, runs_dir))
 
 

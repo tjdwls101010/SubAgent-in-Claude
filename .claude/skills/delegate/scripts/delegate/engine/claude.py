@@ -594,7 +594,8 @@ def quota_from_usage(report, model=None, at=None):
             continue
         applies = not item.get("scope") or (model and item["scope"].lower() in model.lower())
         limits.append({"kind": item.get("kind"), "used_percent": item.get("percent"), "resets_at": resets, "scope": item.get("scope"), "applies": bool(applies)})
-    full = [l for l in limits if l["applies"] and (l["used_percent"] or 0) >= 100]
+    # With extra usage on, Claude Code goes on past a full plan limit, paid.
+    full = [] if report.get("extra_usage_enabled") else [l for l in limits if l["applies"] and (l["used_percent"] or 0) >= 100]
     out = {"state": "exhausted" if full else ("ok" if limits else "unknown"), "scope": "the account's limits" + (f" and those scoped to {model}" if model else ""), "limits": limits, "observed_at": at, "source": "claude -p /usage"}
     if full:
         out["resets_at"] = max(l["resets_at"] for l in full if l["resets_at"]) if any(l["resets_at"] for l in full) else None
@@ -613,6 +614,8 @@ def quota_from_event(rl, at=None):
 
 
 _QUOTA = {}
+# The rate-limit types of a rate_limit_event that are the account's own windows, not one model family's.
+ACCOUNT_LIMITS = ("five_hour", "seven_day")
 
 
 def quota(model=None, runs_dir=None):
@@ -625,7 +628,8 @@ def quota(model=None, runs_dir=None):
     if runs_dir:
         for _, m in iter_runs(runs_dir):
             rl = m.get("rate_limit")
-            if m.get("engine") == NAME and rl and rl.get("observed_at") and at - rl["observed_at"] <= FRESH and (newest is None or rl["observed_at"] > newest["observed_at"]):
+            # Only an event about the account's own windows speaks for every model; one about a model-scoped limit leaves the answer to /usage.
+            if m.get("engine") == NAME and rl and rl.get("observed_at") and at - rl["observed_at"] <= FRESH and rl.get("type") in (None, *ACCOUNT_LIMITS) and (newest is None or rl["observed_at"] > newest["observed_at"]):
                 newest = rl
     _QUOTA[key] = quota_from_event(newest, at) if newest else quota_from_usage(usage_report(worker_env(dict(os.environ), {})), model, at)
     return _QUOTA[key]
@@ -673,6 +677,6 @@ def diagnose(cwd):
         for item in items:
             if item["setting"] in ("sandbox.excludedCommands", "sandbox.enabled", "unreadable settings file"):
                 warnings.append(f"claude {p}: {item['setting']} in {item['file']} — {item['effect']}")
-    report = {"path": info["path"], "installed": bool(info["path"]), "quota": limits, "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
+    report = {"path": info["path"], "installed": bool(info["path"]), "quota": {**limits, "observed_at": iso(limits.get("observed_at")), "resets_at": iso(limits.get("resets_at"))}, "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
     return {"report": report, "blockers": blockers, "warnings": warnings}
 

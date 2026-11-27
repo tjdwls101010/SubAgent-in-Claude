@@ -17,7 +17,7 @@ It records every invocation (argv, cwd, environment, the stdin messages it read)
   auth_fail         stderr "Invalid API key" and exit 1, nothing on stdout
   retry:N           N api_retry events before answering
   retry_hang:N      one api_retry event, then N seconds of silence
-  ratelimit:STATUS  a rate_limit_event with that status
+  ratelimit:STATUS  a rate_limit_event with that status (FAKE_CLAUDE_RATE_LIMIT_TYPE sets its rateLimitType)
   ratelimit_late:STATUS  the same, after silent:N
   followup          a task-notification follow-up turn after the answer
   linger:N          stay alive N seconds after stdin closes
@@ -398,6 +398,8 @@ def run_turn(first):
         if mark(ms, "ratelimit") == "rejected":
             # A limit in force resets in the future, as the real event's resetsAt does.
             rl["rate_limit_info"]["resetsAt"] = int(time.time()) + 3600
+        if os.environ.get("FAKE_CLAUDE_RATE_LIMIT_TYPE"):
+            rl["rate_limit_info"]["rateLimitType"] = os.environ["FAKE_CLAUDE_RATE_LIMIT_TYPE"]
         emit(rl)
     else:
         emit(ev("rate_limit"))

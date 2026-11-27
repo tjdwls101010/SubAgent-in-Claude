@@ -71,9 +71,40 @@ class CodexLimit(Sandbox):
         out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": exhausted_answer(self.root / "rl.json", resets_in=-60)})
         self.wait_state(out["run_id"])
 
-    def test_without_the_app_server_the_newest_rollout_is_read(self):
+    def fresh_rollout(self, age=0):
+        """The captured token_count event, its 5h window still full, written `age` seconds ago."""
+        from datetime import datetime, timezone
+
         event = json.loads((CODEX_FIXTURES / "rollout-token-count.jsonl").read_text())
         event["payload"]["rate_limits"]["primary"]["resets_at"] = int(time.time()) + 3600
+        event["timestamp"] = datetime.fromtimestamp(time.time() - age, timezone.utc).isoformat().replace("+00:00", "Z")
+        return event
+
+    def test_an_old_rollout_reading_refuses_nothing(self):
+        # A limit can reset early, be raised or be paid past, and a refused start writes no new reading: only a fresh one refuses.
+        rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "27"
+        rollouts.mkdir(parents=True)
+        (rollouts / "rollout-2026-11-27T01-47-16-x.jsonl").write_text(json.dumps(self.fresh_rollout(age=3600)) + "\n")
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})
+        self.wait_state(out["run_id"])
+
+    def test_an_app_server_that_never_answers_delays_a_start_but_refuses_nothing(self):
+        began = time.time()
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!silent"}, timeout=60)
+        self.wait_state(out["run_id"])
+        self.assertLess(time.time() - began, 40)
+
+    def test_ordinary_use_the_server_allows_is_not_exhausted(self):
+        path = self.root / "rl.json"
+        exhausted_answer(path)
+        answer = json.loads(path.read_text())
+        answer["result"]["ordinaryUsageAllowed"] = True  # a full window paid past with credits
+        path.write_text(json.dumps(answer))
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
+        self.wait_state(out["run_id"])
+
+    def test_without_the_app_server_the_newest_rollout_is_read(self):
+        event = self.fresh_rollout()
         rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "28"
         rollouts.mkdir(parents=True)
         (rollouts / "rollout-2026-11-28T01-47-16-x.jsonl").write_text(json.dumps(event) + "\n")
@@ -106,6 +137,16 @@ class CodexLimit(Sandbox):
         self.cli_json("stop", "--group", "q", timeout=120)
 
 
+class ReadingsReported(Sandbox):
+    def test_status_and_doctor_say_when_in_the_skills_own_terms(self):
+        out = self.codex("start", "x", env={"FAKE_CODEX_FIXTURE": str(CODEX_FIXTURES / "usage-limit.jsonl"), "FAKE_CODEX_EXIT": "1"})
+        row = self.wait_state(out["run_id"])
+        self.assertEqual(row["state"], "quota_exhausted")
+        self.assertRegex(row["resets_at"], r"^\d{4}-\d{2}-\d{2}T", "status says until when, as `status --help` promises")
+        q = self.cli_json("doctor", "--engine", "codex", env={"FAKE_CODEX_RATE_LIMITS": exhausted_answer(self.root / "rl.json")}, timeout=120)["engines"]["codex"]["quota"]
+        self.assertRegex(q["resets_at"], r"^\d{4}-\d{2}-\d{2}T", "as `models` prints it")
+
+
 class ClaudeLimit(Sandbox):
     def usage(self, percent, scope=None):
         rows = [json.loads(l) for l in (CLAUDE_FIXTURES / "usage.jsonl").read_text().splitlines()]
@@ -131,6 +172,27 @@ class ClaudeLimit(Sandbox):
         out = self.cli_json("start", "--engine", "claude", "--model", "fable", "--effort", "high", "x", env=env, expect=1)
         self.assertEqual(out["error"], "quota_exhausted")
         ok = self.start("x", "--model", "sonnet", env=env)
+        self.wait_state(ok["run_id"])
+
+    def test_an_unreadable_limit_refuses_nothing(self):
+        ok = self.start("x", env={"FAKE_CLAUDE_USAGE": "fail"})
+        self.wait_state(ok["run_id"])
+
+    def test_extra_usage_goes_on_past_a_full_limit(self):
+        env = self.usage(100)
+        path = env["FAKE_CLAUDE_USAGE_FILE"]
+        rows = [json.loads(l) for l in open(path).read().splitlines()]
+        for e in rows:
+            if isinstance(e, dict) and e.get("usage_report"):
+                e["usage_report"]["rate_limits"]["extra_usage"] = {"is_enabled": True}
+        open(path, "w").write("".join(json.dumps(e) + "\n" for e in rows))
+        ok = self.start("x", env=env)
+        self.wait_state(ok["run_id"])
+
+    def test_a_model_scoped_rejection_leaves_other_models_to_usage(self):
+        out = self.start("x [[fake:ratelimit:rejected]] [[fake:error]]", env={"FAKE_CLAUDE_RATE_LIMIT_TYPE": "seven_day_opus"})
+        self.wait_state(out["run_id"])
+        ok = self.start("other model", "--model", "sonnet")
         self.wait_state(ok["run_id"])
 
     def test_a_run_that_hit_the_limit_is_quota_exhausted_and_the_next_start_is_refused(self):

@@ -82,6 +82,9 @@ def run_row(run_dir, at=None):
         "unparsed_events": v["unparsed"],
         "events": str(Path(run_dir) / "events.jsonl"),
     }
+    if meta.get("state") == "quota_exhausted":
+        # `status --help` promises when a used-up limit resets.
+        row["resets_at"] = iso(meta.get("resets_at"))
     if meta.get("state") in TERMINAL and worker_alive(meta):
         row["still_writing"] = True
     if "stderr_tail" in meta:
