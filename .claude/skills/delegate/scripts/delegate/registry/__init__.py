@@ -1,12 +1,16 @@
 __all__ = [
     "ACTIVE",
+    "DIRNAME",
     "TERMINAL",
+    "claim_group",
     "close",
     "enqueue",
     "ensure_runs_dir",
     "find_run",
+    "group_view",
     "is_live",
     "iter_runs",
+    "list_groups",
     "live_runs",
     "newest_on",
     "pending",
@@ -16,13 +20,18 @@ __all__ = [
     "reap",
     "record_if_active",
     "registry_args",
+    "release_group",
     "resolve_runs_dir",
     "supervisor_alive",
     "take",
     "unreadable_runs",
+    "update_group",
     "update_meta",
+    "update_slot",
+    "valid_group_name",
     "worker_alive",
 ]
 
 from .inbox import close, enqueue, pending, take
-from .runs import ACTIVE, TERMINAL, ensure_runs_dir, find_run, is_live, iter_runs, live_runs, newest_on, publish_lock, publish_run, read_meta, reap, record_if_active, registry_args, resolve_runs_dir, supervisor_alive, unreadable_runs, update_meta, worker_alive
+from .runs import ACTIVE, DIRNAME, TERMINAL, ensure_runs_dir, find_run, is_live, iter_runs, live_runs, newest_on, publish_lock, publish_run, read_meta, reap, record_if_active, registry_args, resolve_runs_dir, supervisor_alive, unreadable_runs, update_meta, worker_alive
+from .groups import claim_group, group_view, list_groups, release_group, update_group, update_slot, valid_group_name

@@ -10,11 +10,13 @@ from pathlib import Path
 from delegate.claude_cli import PARENT_IDENTITY
 from delegate.codex_cli import ISOLATION_FLOOR_TEXT, apply_preamble, build_argv, changed_paths, check_model_effort, codex_home, codex_support, config_summary, event_lines, first_thread_id, login_status, model_catalog, read_only_blocker, refuse_without_isolation, scan_progress, stderr_tail
 from delegate.errors import Refusal
-from delegate.git import toplevel
+from delegate.git import add_detached, toplevel
 from delegate.registry import TERMINAL, registry_args, update_meta, worker_alive
 from delegate.util import clip, invocation, nfc, now
 
 NAME = "codex"
+# Whether a run can ask for the priority service tier (`--priority`).
+TAKES_PRIORITY = True
 STDIN = "devnull"
 SANDBOX = {"read-only": "read-only", "write": "workspace-write", "full": "danger-full-access"}
 
@@ -122,10 +124,29 @@ def unregistered_note():
     return "this thread was not in the registry; it now runs under the profile, model and effort you gave, recorded from now on"
 
 
+def worktree_plan(repo, name, base, main):
+    """A group member's checkout as this skill cuts it: detached at the run's own directory (`<run>/wt`, inside the registry, which git ignores), from `base`, when the run is published — tracked files at that commit and nothing else."""
+    return {"engine": NAME, "name": name, "path": None, "branch": None, "base": base, "repo": repo, "main": main}
+
+
+def worktree_taken(plan):
+    return None
+
+
 def prepare(meta, prompt, *, group_info=None, worktree_info=None, origin=None):
-    """(argv, None): the prompt travels in the argv, behind the paragraphs that tell Codex it is a non-interactive turn (and, for a group member, which group and which checkout)."""
+    """(argv, None): the prompt travels in the argv, behind the paragraphs that tell Codex it is a non-interactive turn (and, for a group member, which group and which checkout). A fresh group member's checkout is cut here, under the publish lock, so it exists from the moment the run is published and `clean` cannot remove it in between."""
     s = meta["settings"]
     run_dir = Path(meta["run_dir"])
+    wt = meta.get("worktree")
+    if wt and meta["kind"] == "start" and not wt.get("path"):
+        path = run_dir / "wt"
+        ok, err = add_detached(wt["repo"], path, wt["base"])
+        if not ok:
+            raise Refusal(f"could not create the checkout for this member: {err}", base=wt["base"], path=str(path))
+        meta["worktree"] = {**wt, "path": str(path)}
+        meta["cwd"] = meta["launch_cwd"] = str(path)
+        if worktree_info is not None:
+            worktree_info = {**worktree_info, "path": str(path)}
     schema_path = None
     if s.get("schema_text") is not None:
         schema_path = run_dir / "schema.json"

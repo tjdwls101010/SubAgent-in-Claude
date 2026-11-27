@@ -116,7 +116,12 @@ def create_run(*, runs_dir, engine_name, kind, prompt, settings, cwd, native_id=
         if origin:
             meta["origin"] = origin
         meta.update(extra_meta or {})
-        argv, text = engine.prepare({**meta, "run_dir": run_dir}, prompt, group_info=group_info, worktree_info=worktree_info, origin=origin)
+        meta["run_dir"] = run_dir
+        try:
+            # The adapter may settle where the run works here (a checkout it cuts for a group member), so it gets the meta itself.
+            argv, text = engine.prepare(meta, prompt, group_info=group_info, worktree_info=worktree_info, origin=origin)
+        finally:
+            meta.pop("run_dir", None)
         meta["argv"] = argv
         first["text"] = text
         return meta

@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from delegate.registry import find_run, registry_args, resolve_runs_dir
+from delegate.registry import find_run, group_view, registry_args, resolve_runs_dir
 from delegate.util import invocation
 
+from .group import group_result, member_dirs
 from .snapshot import snapshot_of
 from .wait import wait
 
@@ -40,8 +41,15 @@ def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=N
     return out
 
 
-def result(*, cwd, ref=None, wait_for=False, wait_timeout=None, runs_dir=None):
+def result(*, cwd, ref=None, group=None, wait_for=False, wait_timeout=None, runs_dir=None):
     registry = resolve_runs_dir(cwd, runs_dir)
+    if group:
+        manifest = group_view(registry, group)
+        if not wait_for:
+            return group_result(registry, group, manifest=manifest)
+        dirs = [d for _, d in member_dirs(registry, manifest) if d]
+        reason, fresh = wait(dirs, timeout=wait_timeout)
+        return group_result(registry, group, manifest=manifest, wait_reason=reason, fresh=fresh, wait_timeout=wait_timeout)
     run_dir = find_run(registry, ref)
     if not wait_for:
         return run_result(run_dir)

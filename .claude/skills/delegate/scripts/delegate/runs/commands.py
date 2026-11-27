@@ -8,7 +8,7 @@ from pathlib import Path
 from delegate.engine import adapter, boot_time, record_stopped, signal_ladder, sweep_group
 from delegate.errors import NotFound, Refusal
 from delegate.git import is_worktree, uncommitted_count
-from delegate.registry import TERMINAL, find_run, newest_on, reap, registry_args, resolve_runs_dir, supervisor_alive, update_meta, worker_alive
+from delegate.registry import TERMINAL, find_run, group_view, newest_on, reap, registry_args, resolve_runs_dir, supervisor_alive, update_meta, worker_alive
 from delegate.util import group_alive, invocation, now, process_command, timings
 
 from .create import create_run, default_cwd, refuse_inside_worker, start_reply
@@ -159,11 +159,18 @@ def stop_one(run_dir):
     return entry
 
 
-def stop(*, refs=(), cwd, runs_dir=None, run_dirs=()):
-    """Stop each run named in `refs` (and each of `run_dirs`): SIGINT to its process group, then SIGTERM, then SIGKILL, so the engine can end the turn and keep the session or thread resumable."""
+def stop(*, refs=(), group=None, cwd, runs_dir=None):
+    """Stop each run named in `refs`, or the run each slot of `group` started: SIGINT to its process group, then SIGTERM, then SIGKILL, so the engine can end the turn and keep the session or thread resumable."""
     refuse_inside_worker()
     registry = resolve_runs_dir(cwd, runs_dir)
-    dirs = [find_run(registry, r) for r in refs] + list(run_dirs)
-    if not dirs:
+    dirs = [find_run(registry, r) for r in refs]
+    if group:
+        for slot in group_view(registry, group).get("members") or []:
+            if slot.get("run_id"):
+                try:
+                    dirs.append(find_run(registry, slot["run_id"]))
+                except NotFound:
+                    continue
+    if not dirs and not group:
         raise Refusal("nothing to stop", arguments=True, help="stop --help")
     return {"stopped": [stop_one(d) for d in dirs]}

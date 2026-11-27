@@ -68,3 +68,10 @@ def remote_url(path, name="origin", env=None):
     code, out, _ = run_git(path, "config", "--get-all", f"remote.{name}.url", env=env)
     first = out.strip().splitlines()[0].strip() if code == 0 and out.strip() else ""
     return first or None
+
+
+def repo_identity(path):
+    """(repository, top level) of the checkout `path` is in, or (None, None). The repository is `--git-common-dir`, which every worktree of one repository shares and no two repositories (or a submodule and its parent) do; the top level is what a path in it is made relative to."""
+    code, out, _ = run_git(path, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel")
+    lines = [l.strip() for l in out.splitlines() if l.strip()] if code == 0 else []
+    return (nfc(lines[0]), nfc(lines[1])) if len(lines) >= 2 else (None, None)

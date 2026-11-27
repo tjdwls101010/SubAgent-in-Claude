@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 from delegate.engine import ENGINES, adapter
-from delegate.registry import live_runs, resolve_runs_dir
+from delegate.git import main_checkout, worktree_entries
+from delegate.registry import DIRNAME, list_groups, live_runs, read_meta, resolve_runs_dir
 from delegate.util import entry_path, invocation, skill_dir
 
 
@@ -38,6 +39,25 @@ def doctor(*, cwd, engine=None, runs_dir=None):
     if not reg["writable"]:
         blockers.append(f"the registry {registry} cannot be written (it, or the nearest folder that exists, is not a writable directory)")
     reg["live_runs"] = [m.get("run_id") for _, m in live_runs(registry)] if reg["exists"] else []
+    groups = list_groups(registry) if reg["exists"] else []
+    reg["groups"] = [g["name"] for g in groups]
+    # A checkout belongs to the group whose member recorded its exact path; names alone are ambiguous (fix-1 against fix-db-1).
+    owner = {}
+    for g in groups:
+        for slot in g.get("members") or []:
+            if slot.get("kind", "start") != "start":
+                # A resumed member works in a checkout an earlier group made, which stays that group's.
+                continue
+            path = (slot.get("worktree") or {}).get("path")
+            if not path and slot.get("run_id"):
+                try:
+                    path = (read_meta(Path(registry) / slot["run_id"]).get("worktree") or {}).get("path")
+                except Exception:
+                    path = None
+            if path:
+                owner[os.path.realpath(path)] = g["name"]
+    repo = main_checkout(cwd)
+    reg["worktrees"] = [{"path": e["path"], "branch": e["branch"], "group": owner.get(os.path.realpath(e["path"]))} for e in (worktree_entries(repo) if repo else []) if "/.claude/worktrees/" in e["path"] or (DIRNAME in e["path"] and e["path"].endswith("/wt"))]
     return {
         "ok": not blockers,
         "blockers": blockers,
