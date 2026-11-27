@@ -1,0 +1,70 @@
+"""Reading a repository through the git CLI: its top level, its main checkout, its HEAD and how much is uncommitted."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+
+from delegate.util import nfc
+
+
+def run_git(cwd, *args, timeout=30, env=None, encoding=None, errors=None):
+    """(returncode, stdout, stderr) of `git -C cwd args…`, in `env` when given (this process's environment otherwise); a missing git or directory is a failure, not an exception. Output is read in this process's locale encoding unless `encoding` says otherwise; `errors="replace"` reads bytes that are not text as U+FFFD, for output that is only shown, such as commit subjects — paths are read strictly, so two paths never become one."""
+    try:
+        proc = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding=encoding, errors=errors, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, "", str(e)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def toplevel(path, env=None):
+    """The top level of the checkout `path` is in, or None outside a git work tree."""
+    code, out, _ = run_git(path, "rev-parse", "--show-toplevel", env=env)
+    return nfc(out.strip()) if code == 0 and out.strip() else None
+
+
+def main_checkout(path):
+    """The repository's main checkout: the first `git worktree list` record, seen the same from any linked worktree. A bare repository has no main checkout, and a submodule is its own, so both answer with the checkout `path` is in. None outside a git work tree."""
+    top = toplevel(path)
+    if top is None:
+        return None
+    code, out, _ = run_git(path, "worktree", "list", "--porcelain")
+    if code != 0:
+        return top
+    first = out.split("\n\n", 1)[0].splitlines()
+    worktree = next((l[len("worktree "):] for l in first if l.startswith("worktree ")), None)
+    if worktree is None or "bare" in first:
+        return top
+    worktree = nfc(worktree)
+    # A submodule's list starts at its git directory under the superproject's .git/modules, which is not a checkout: only a record that is its own top level is one.
+    if not os.path.isdir(worktree) or toplevel(worktree) != worktree:
+        return top
+    return worktree
+
+
+def head_commit(path):
+    code, out, _ = run_git(path, "rev-parse", "--verify", "-q", "HEAD")
+    return out.strip() if code == 0 and out.strip() else None
+
+
+def uncommitted_count(path):
+    """Entries `git status` shows as changed or untracked, leaving out ignored files and .claude/worktrees; None outside a work tree."""
+    # .claude/worktrees holds Claude Code's worktrees, never the caller's own changes.
+    code, out, _ = run_git(path, "status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).claude/worktrees")
+    if code != 0:
+        return None
+    return sum(1 for l in out.splitlines() if l.strip())
+
+
+
+def current_branch(path):
+    """The branch checked out at `path`, or None on a detached HEAD or outside a work tree."""
+    code, out, _ = run_git(path, "symbolic-ref", "--short", "-q", "HEAD")
+    return out.strip() if code == 0 and out.strip() else None
+
+
+def remote_url(path, name="origin", env=None):
+    """The URL of the remote `name` of the repository at `path` as configured, or None. Not `remote get-url`, which applies `url.*.insteadOf`: a rewrite changes where git connects, not which repository the remote names. Of several URLs, the first, which is the one fetch uses (`config --get` alone gives the last)."""
+    code, out, _ = run_git(path, "config", "--get-all", f"remote.{name}.url", env=env)
+    first = out.strip().splitlines()[0].strip() if code == 0 and out.strip() else ""
+    return first or None
