@@ -48,6 +48,9 @@ def member_meta(runs_dir, slot):
 
 def checkout_of(slot, meta):
     """Where a member's own checkout is: the slot's plan, completed by what its run recorded (a codex checkout's path is set when it is cut; a claude one's when claude starts in it)."""
+    if slot.get("kind", "start") != "start":
+        # A resumed member works in a checkout an earlier group made; that group cleans it.
+        return None
     wt = dict(slot.get("worktree") or {})
     if meta and meta.get("worktree"):
         wt.update({k: v for k, v in meta["worktree"].items() if v is not None})

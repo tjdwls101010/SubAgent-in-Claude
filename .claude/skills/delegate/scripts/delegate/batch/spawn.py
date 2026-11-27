@@ -68,7 +68,8 @@ def start_member(runs_dir, group, generation, size, plan, defaults, caller_cwd, 
     task = plan["task"]
 
     def published(meta):
-        update_slot(runs_dir, group, generation, plan["index"], {"run_id": meta["run_id"], "engine": meta["engine"], "worktree": meta.get("worktree")})
+        # A checkout belongs to the group whose fresh member made it: a member resumed here keeps working in its old checkout, which this group neither owns nor cleans.
+        update_slot(runs_dir, group, generation, plan["index"], {"run_id": meta["run_id"], "engine": meta["engine"], **({"worktree": meta.get("worktree")} if plan["kind"] == "start" else {})})
 
     try:
         if plan["kind"] == "start":

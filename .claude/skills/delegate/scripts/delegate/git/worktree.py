@@ -61,7 +61,8 @@ def status_entries(path):
     """(two-letter status, path) for every changed, untracked and ignored entry in the checkout at `path`, untracked and ignored listed file by file. None outside a work tree, or when git could not read a directory in it (so what it holds is not known)."""
     # traditional, unlike matching, lists the files inside an ignored directory one by one when untracked files are listed in full.
     # In English whatever the locale, since the warning below is read; and without refreshing the index, which would make the worktree look changed (`last_changed`).
-    code, out, err = run_git(path, "status", "--porcelain=v1", "-z", "--ignored=traditional", "--untracked-files=all", env={**os.environ, "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"})
+    # --ignore-submodules=none: a submodule's changes count as what the checkout holds, whatever the repository's config hides from `git status`.
+    code, out, err = run_git(path, "status", "--porcelain=v1", "-z", "--ignored=traditional", "--untracked-files=all", "--ignore-submodules=none", env={**os.environ, "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"})
     # git skips a directory it cannot read with only a warning; what it holds is then unknown, not absent.
     if code != 0 or "could not open directory" in err:
         return None

@@ -133,3 +133,18 @@ class CleanAgainstWorkInsideACheckout(Sandbox):
         self.assertTrue(self.cli_json("clean", "--group", "again")["name_released"])
         self.batch("again")
         self.assertEqual(self.cli_json("status", "--group", "again")["generation"], first + 1)
+
+
+class ARoundThatResumesAMember(Sandbox):
+    def test_its_clean_never_touches_the_checkout_an_earlier_group_made(self):
+        first = self.cli_json("batch", *CODEX_RUN, "--group", "r1", "--worktree", "--task", "x", timeout=120)["runs"][0]
+        self.wait_state(first["run_id"])
+        tasks = self.root / "r2.jsonl"
+        tasks.write_text(json.dumps({"prompt": "go on", "kind": "resume", "resume": first["run_id"]}) + "\n")
+        second = self.cli_json("batch", "--group", "r2", "--tasks-file", str(tasks), timeout=120)["runs"][0]
+        self.wait_state(second["run_id"])
+        self.assertEqual(second["cwd"], first["worktree"], "a resumed member keeps working in its checkout")
+        out = self.cli_json("clean", "--group", "r2", "--force")
+        self.assertEqual((out["removed"], out["kept"]), ([], []))
+        self.assertTrue(__import__("pathlib").Path(first["worktree"]).is_dir(), "the checkout is r1's, which r2's clean leaves alone")
+        self.assertTrue(self.cli_json("clean", "--group", "r1")["name_released"])
