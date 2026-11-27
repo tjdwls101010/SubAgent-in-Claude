@@ -5,11 +5,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from delegate.engine import adapter, record_stopped, signal_ladder
+from delegate.engine import adapter, boot_time, record_stopped, signal_ladder, sweep_group
 from delegate.errors import NotFound, Refusal
 from delegate.git import is_worktree, uncommitted_count
 from delegate.registry import TERMINAL, find_run, newest_on, reap, registry_args, resolve_runs_dir, supervisor_alive, update_meta, worker_alive
-from delegate.util import invocation, now, process_command, timings
+from delegate.util import group_alive, invocation, now, process_command, timings
 
 from .create import create_run, default_cwd, refuse_inside_worker, start_reply
 
@@ -17,8 +17,8 @@ from .create import create_run, default_cwd, refuse_inside_worker, start_reply
 def start(*, engine, prompt, cwd, flags, label=None, timeout=None, runs_dir=None, origin=None, on_published=None):
     """Start a fresh worker on `engine` with `prompt`. `cwd` is where the command was run; `flags` holds profile, model, effort, schema and an explicit working directory (`cwd` key) when given; `origin` is recorded in the run's meta (see `create_run`); `on_published(meta)` is called as soon as the run is in the registry, before the start wait."""
     a = adapter(engine)
-    settings = a.settings(flags, None, command="start")
     run_cwd = flags.get("cwd") or default_cwd(cwd)
+    settings = a.settings(flags, None, command="start", cwd=run_cwd)
     # The registry belongs to the project the command runs in, so `status` there finds the run whatever --cwd says.
     registry = resolve_runs_dir(cwd, runs_dir)
     meta = create_run(runs_dir=registry, engine_name=engine, kind="start", prompt=prompt, settings=settings, cwd=run_cwd, label=label, timeout=timeout, origin=origin, on_published=on_published)
@@ -69,7 +69,6 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
         native_id = ref
     a = adapter(engine)
     record = dict(newest["settings"]) if newest else None
-    settings = a.settings({**flags, "resume": True}, record, command="resume")
     wt = (newest or {}).get("worktree")
     expect_cwd = worktree_info = worktree_check = None
     if wt and engine == "claude":
@@ -91,6 +90,7 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
             raise Refusal(f"the directory this session last worked in, {run_cwd}, is gone; resuming would continue in {launch_cwd}", run_id=newest["run_id"], instead=invocation("resume", newest["run_id"], "<prompt>", "--cwd", "<directory>", *registry_args(registry)), why="name the directory to continue in")
     else:
         run_cwd = launch_cwd = flags.get("cwd") or default_cwd(cwd)
+    settings = a.settings({**flags, "resume": True}, record, command="resume", cwd=run_cwd)
     extra = {}
     if group_index is not None:
         extra["group_index"] = group_index
@@ -121,6 +121,11 @@ def stop_one(run_dir):
     still = worker_alive(meta)
     if meta.get("state") in TERMINAL and not still:
         entry.update({"state": meta["state"], "note": "already ended"})
+        left = meta.get("leftover_group") or {}
+        if left.get("pgid") and left.get("boot") and left["boot"] == boot_time() and group_alive(left["pgid"]):
+            # The worker ended but left something in its process group running (a server it started): ending that is what this stop asks; the run's outcome stays.
+            entry["signals_sent"] = sweep_group(left["pgid"], after="SIGINT")
+            entry["note"] = "already ended; what it left running in its process group was ended"
         return entry
     if meta.get("state") not in TERMINAL:
         time.sleep(timings()["pause_before_stop_mark"])

@@ -61,6 +61,16 @@ def path_key(text):
     return nfc(nfc(text).casefold())
 
 
+def clip(s, n):
+    """Collapse to one line and cap at `n` characters, saying how much was dropped."""
+    import re
+
+    if not s:
+        return ""
+    s = re.sub(r"\s+", " ", s.replace("\n", " ").replace("\r", " ")).strip()
+    return s if len(s) <= n else s[:n] + f"…(+{len(s) - n} chars)"
+
+
 def trim_bytes(text, limit):
     """`text` cut to at most `limit` UTF-8 bytes at a character boundary."""
     data = text.encode("utf-8", "replace")

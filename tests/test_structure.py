@@ -25,6 +25,7 @@ KINDS = {
     "doctor": "feature",
     "registry": "store",
     "claude_cli": "system",
+    "codex_cli": "system",
     "git": "system",
     "errors": "shared",
     "util": "shared",
@@ -33,7 +34,7 @@ KINDS = {
 LAYER = {"feature": 3, "store": 2, "system": 1, "shared": 0}
 FEATURE_EDGES = {("runs", "engine"), ("observe", "engine"), ("doctor", "engine")}
 # An engine's CLI unit is imported by engine/ alone, so every other feature reaches an engine through the adapter contract.
-ENGINE_SYSTEMS = {"claude_cli"}
+ENGINE_SYSTEMS = {"claude_cli", "codex_cli"}
 
 
 def unit_of(dotted):

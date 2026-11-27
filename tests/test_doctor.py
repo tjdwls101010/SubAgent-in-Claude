@@ -30,9 +30,20 @@ class Doctor(Sandbox):
         self.assertFalse(d["ok"])
         self.assertTrue(any("not logged in" in b for b in d["blockers"]))
 
-    def test_no_claude_is_a_blocker(self):
-        d = self.doctor(expect=3, env={"PATH": "/usr/bin:/bin"})
+    def test_no_claude_is_a_blocker_when_claude_is_asked_about(self):
+        d = self.cli_json("doctor", "--engine", "claude", expect=3, timeout=120, env={"PATH": "/usr/bin:/bin"})
         self.assertTrue(any("not on PATH" in b for b in d["blockers"]))
+
+    def test_one_missing_engine_is_a_warning_and_none_installed_a_blocker(self):
+        from support.harness import FAKE_DIR
+
+        d = self.doctor(env={"PATH": f"{FAKE_DIR}:/usr/bin:/bin"})
+        self.assertTrue(d["ok"], d["blockers"])
+        self.assertIn("codex: codex is not on PATH", d["warnings"])
+        self.assertFalse(d["engines"]["codex"]["installed"])
+        self.assertFalse(d["engines"]["codex"]["ok"], "the engine itself is not ready; only the verdict lets other runs go")
+        d = self.doctor(expect=3, env={"PATH": "/usr/bin:/bin"})
+        self.assertTrue(any("no engine is installed" in b for b in d["blockers"]))
 
     def test_widening_settings_are_warned(self):
         (self.home / ".claude").mkdir()
@@ -76,3 +87,35 @@ class LimitsInLogs(Sandbox):
         self.assertIn("retry attempt=2/10 error=overloaded status=529", lines)
         self.assertEqual([l for l in lines if l.startswith("ratelimit ")], ["ratelimit allowed 5h=2% 7d=42%", "ratelimit allowed_warning 5h=2% 7d=42%"])
         self.assertEqual(self.status(reply["run_id"])["rate_limit"]["status"], "allowed_warning")
+
+
+class CodexDoctor(Sandbox):
+    """doctor's codex section with the fake codex: version and what it can run, login (whose failure is a blocker, and a config problem named as one), CODEX_HOME, and what config.toml sets — which runs do not read."""
+
+    def codex_doctor(self, expect=0, **kw):
+        return self.cli_json("doctor", "--engine", "codex", expect=expect, timeout=120, **kw)
+
+    def test_healthy(self):
+        d = self.codex_doctor()
+        c = d["engines"]["codex"]
+        self.assertEqual((c["version"], c["isolation"], c["read_only_scratch"], c["login"]["cause"]), ("0.160.0", True, True, "authenticated"))
+        self.assertEqual(c["codex_home"], str(self.root / "codex-home"))
+        self.assertTrue(c["codex_home_from_env"])
+        self.assertEqual(self.codex_calls(), [], "doctor starts no worker")
+
+    def test_not_logged_in_is_a_blocker_and_a_config_problem_says_so(self):
+        d = self.codex_doctor(expect=3, env={"FAKE_CODEX_LOGIN_RC": "1"})
+        self.assertTrue(any("not logged in" in b for b in d["blockers"]))
+        d = self.codex_doctor(expect=3, env={"FAKE_CODEX_LOGIN_RC": "1", "FAKE_CODEX_LOGIN_OUT": "Error loading config.toml: invalid"})
+        self.assertTrue(any("not an auth one" in b for b in d["blockers"]))
+
+    def test_below_the_isolation_floor_is_a_blocker_and_below_the_profile_floor_a_warning(self):
+        d = self.codex_doctor(expect=3, env={"FAKE_CODEX_VERSION": "codex-cli 0.121.0"})
+        self.assertTrue(any("0.122.0" in b for b in d["blockers"]))
+        d = self.codex_doctor(env={"FAKE_CODEX_VERSION": "codex-cli 0.159.0"})
+        self.assertTrue(any("stricter sandbox" in w for w in d["warnings"]))
+
+    def test_config_toml_is_reported_not_used(self):
+        (self.root / "codex-home" / "config.toml").write_text('sandbox_mode = "danger-full-access"\napproval_policy = "never"\n')
+        c = self.codex_doctor()["engines"]["codex"]
+        self.assertEqual(c["config"], {"path": str(self.root / "codex-home" / "config.toml"), "sandbox_mode": "danger-full-access", "approval_policy": "never"})

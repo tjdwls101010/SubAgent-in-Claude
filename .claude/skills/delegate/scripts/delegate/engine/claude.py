@@ -14,7 +14,7 @@ from pathlib import Path
 from delegate.claude_cli import EFFORTS, PROFILES, VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
 from delegate.git import main_checkout, startup_snapshot, toplevel
-from delegate.registry import TERMINAL, close, enqueue, registry_args, supervisor_alive, take, update_meta
+from delegate.registry import TERMINAL, close, enqueue, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
@@ -51,8 +51,10 @@ def read_schema(path, command):
     return json.dumps(obj, ensure_ascii=False)
 
 
-def settings(flags, record=None, *, command="start"):
+def settings(flags, record=None, *, command="start", cwd=None):
     """The settings for one turn: each of profile, model, effort and schema from the flags, else from the session's last recorded run (`record`), and for a new session from the flags alone — there is no default model or effort, so a run never depends on which settings file a worker reads. For a session the registry never saw (`record` None, `flags["resume"]`) the model is the session's own (`claude -p --resume` restores it) and the effort must be given, since the session does not keep it."""
+    if flags.get("priority"):
+        raise Refusal("--priority is a codex setting; claude has no service tier to request", arguments=True, help=f"{command} --help")
     record = record or {}
     resume = bool(flags.get("resume"))
     out = {"engine": NAME}
@@ -400,8 +402,9 @@ def view_of(events, meta, unparsed=0):
     summary = summarize(events)
     final = final_result(events, meta.get("messages") or [])
     live = meta.get("state") not in TERMINAL
-    # Once stdin has closed (finishing) the answer is decided; whatever claude still prints is not it.
-    decided = not live or meta.get("state") == "finishing"
+    # Once stdin has closed (finishing) the answer is decided; whatever claude still prints is not it. An orphan whose claude still runs has not decided.
+    writing = worker_alive(meta)
+    decided = (not live and not writing) or meta.get("state") == "finishing" or bool(meta.get("finishing_since"))
     chosen = final["result"]
     text = chosen["text"] if chosen and decided else (summary["last_message"] or (chosen["text"] if chosen else "")) or ""
     schema = (meta.get("settings") or {}).get("schema_text") is not None
@@ -452,6 +455,7 @@ def view_of(events, meta, unparsed=0):
         "rows": activity_rows(events, rel_to=rel, messages=meta.get("messages") or []),
         "unparsed": unparsed,
         "retrying": summary["last_event_is_retry"] and meta.get("state") != "finishing",
+        "writing": writing,
         "rate_limit": meta.get("rate_limit") or summary["rate_limit"],
         "header": header,
         "row": row,
@@ -480,7 +484,10 @@ def attention(meta, v, at):
 
 
 def log_lines(v):
-    return render_rows(v["rows"])
+    lines = render_rows(v["rows"])
+    if v["unparsed"]:
+        lines.append(f"unparsed lines={v['unparsed']}")
+    return lines
 
 
 # -- doctor -----------------------------------------------------------------
@@ -513,6 +520,6 @@ def diagnose(cwd):
         for item in items:
             if item["setting"] in ("sandbox.excludedCommands", "sandbox.enabled", "unreadable settings file"):
                 warnings.append(f"claude {p}: {item['setting']} in {item['file']} — {item['effect']}")
-    report = {"path": info["path"], "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
+    report = {"path": info["path"], "installed": bool(info["path"]), "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
     return {"report": report, "blockers": blockers, "warnings": warnings}
 

@@ -54,12 +54,13 @@ class Help(unittest.TestCase):
         out = subcommand_help("status")
         self.assertIn("\n  stalled      starting, running or finishing with no event for 600 s; advisory, nothing is killed — read `in_progress` beside it\n", out)
         start = subcommand_help("start")
-        self.assertIn("  read-only  claude: reads anything, and runs any shell command inside a sandbox that can write only its TMPDIR and ~/.cache", start)
+        line = next(l for l in start.splitlines() if l.lstrip().startswith("read-only  codex:"))
+        self.assertIn("claude: reads anything, and runs any shell command inside a sandbox that can write only its TMPDIR and ~/.cache", line, "one profile, both engines, one line")
 
     def test_closed_sets_are_choices(self):
         start = subcommand_help("start")
         self.assertIn("{read-only,write,full}", start)
-        self.assertIn("--engine {claude", start)
+        self.assertIn("--engine {claude,codex}", start)
 
     def test_efforts_are_named_per_engine(self):
         """Each engine takes its own efforts, so --effort is checked against the engine chosen, and its help names them."""
@@ -82,6 +83,9 @@ class ArgumentErrors(unittest.TestCase):
         self.check(["start", "x", "--profile", "bypass"], "start --help")
         self.check(["start", "x", "--engine", "nope"], "start --help")
         self.check(["start", "x", *CLAUDE_RUN[:4], "--effort", "ultra"], "start --help")
+
+    def test_priority_is_codex_only(self):
+        self.check(["start", "x", *CLAUDE_RUN, "--priority"], "start --help")
 
     def test_a_new_run_names_engine_model_and_effort(self):
         self.check(["start", "x"], "start --help")

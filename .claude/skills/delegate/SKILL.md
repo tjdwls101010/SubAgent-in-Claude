@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: "Start background workers and manage them like subagents: a handle at once, progress you can read, stopping and resuming them, and waiting for and collecting text or JSON-schema results. Engines: Claude through headless Claude Code. Use when work should go to another worker you can watch and collect, or when a long task should run while you do something else. Triggers include: delegate, 위임, 작업자, claude worker, 클로드 작업자, 클로드한테 시켜, 백그라운드. Not for Claude Code's built-in Agent tool, subagents or agent teams, claude --bg, or general questions about the Claude API."
+description: "Start background workers on two engines — GPT through the local Codex CLI, Claude through headless Claude Code — and manage them like subagents: a handle at once, progress you can read, stopping and resuming them, and waiting for and collecting text or JSON-schema results. Use when work should go to GPT or to another Claude session you can watch and collect, when an independent model should review or verify something, or when a long task should run while you do something else. Triggers include: delegate, 위임, 작업자, codex, 코덱스, 코덱스로, 코덱스한테, GPT한테, GPT에게 시켜, claude worker, 클로드 작업자, 클로드한테 시켜, 백그라운드, 교차 검증. Not for Claude Code's built-in Agent tool, subagents or agent teams, claude --bg, Codex Cloud, codex mcp-server or app-server, or general questions about GPT, OpenAI or the Claude API."
 allowed-tools: Bash(uv run "${CLAUDE_SKILL_DIR}/scripts/cli.py" *)
 ---
 

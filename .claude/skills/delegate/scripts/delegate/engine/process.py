@@ -18,6 +18,20 @@ MARKER = "DELEGATE_RUN"
 OTHER_MARKERS = ("CLAUDE_SKILL_RUN",)
 
 
+def boot_time():
+    """When this Mac last booted (epoch seconds), or None: a process group id recorded before it names nothing of ours."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    import re
+
+    m = re.search(r"sec = (\d+)", out)
+    return int(m.group(1)) if m else None
+
+
 def markers(run_id):
     return {MARKER: run_id, **{name: run_id for name in OTHER_MARKERS}}
 
@@ -57,16 +71,26 @@ def signal_ladder(pgid, pid, *, grace=None, kill_grace=None, on_signal=None):
         end = time.time() + wait
         while time.time() < end and pid_alive(pid, pgid):
             time.sleep(0.05)
-    if sent and sent[-1] != "SIGKILL" and group_alive(pgid):
-        # The group id stays reserved while any member lives, so what answers here is still this run's.
+    if sent and sent[-1] != "SIGKILL":
+        sent += sweep_group(pgid, kill_grace, after=sent[-1])
+    return sent
+
+
+def sweep_group(pgid, kill_grace=None, after=None):
+    """End what of a process group outlived its leader (a tool's child that ignored SIGINT, a server a turn left running): SIGTERM, then SIGKILL after `kill_grace` to whatever is left. The group id stays reserved while any member lives, so what answers here is still this run's. Returns the signals sent."""
+    kill_grace = timings()["kill_grace"] if kill_grace is None else kill_grace
+    sent = []
+    for sig in ((signal.SIGTERM, signal.SIGKILL) if after != "SIGTERM" else (signal.SIGKILL,)):
         end = time.time() + kill_grace
         while time.time() < end and group_alive(pgid):
             time.sleep(0.05)
+        if not group_alive(pgid):
+            break
         try:
-            os.killpg(pgid, signal.SIGKILL)
-            sent.append("SIGKILL")
+            os.killpg(pgid, sig)
+            sent.append(sig.name)
         except (ProcessLookupError, PermissionError):
-            pass
+            break
     return sent
 
 
@@ -207,9 +231,12 @@ def supervise(run_dir, adapter):
         if m.get("stop_requested"):
             fields.update({"state": "interrupted", "error": "stopped"})
         elif m.get("timed_out_at"):
-            fields.update({"state": "timed_out", "error": f"--timeout of {m['settings'].get('timeout'):g} s passed"})
+            fields.update({"state": "timed_out", "error": f"timed out: its --timeout of {m['settings'].get('timeout'):g} s passed"})
         fields.setdefault("exit_code", returncode)
         fields.setdefault("ended_at", now())
+        if group_alive(proc.pid):
+            # Something the worker started outlived it in its process group (a server a turn left running): recorded, so a later `stop` may end it — and only then, since an old group id is never taken as proof on its own.
+            fields["leftover_group"] = {"pgid": proc.pid, "boot": boot_time()}
         if fields.get("state") == "failed" and stderr_tail and "stderr_tail" not in fields:
             fields["stderr_tail"] = stderr_tail[-600:]
         m.update(fields)

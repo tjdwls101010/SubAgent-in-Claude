@@ -16,7 +16,7 @@ def snapshot_of(run_dir, attention_override=None):
     header = {
         "run_id": meta["run_id"],
         "engine": meta.get("engine"),
-        "native_id": meta.get("native_id"),
+        "native_id": meta.get("native_id") or v.get("native_id"),
         "state": meta.get("state"),
         "exit_code": meta.get("exit_code"),
         "error": meta.get("error"),
@@ -26,8 +26,12 @@ def snapshot_of(run_dir, attention_override=None):
         **v["header"],
         "message_bytes": len(v["text"].encode("utf-8")),
     }
+    if v["unparsed"]:
+        header["unparsed_events"] = v["unparsed"]
     if live:
         header["note"] = "the answer is in, but the worker is still running something" if v["decided"] else "the run is live: this is its latest message, not its answer"
+    elif v.get("writing"):
+        header["note"] = "the run is recorded ended, but its worker still runs: this is its latest message, not its answer"
     return {
         "meta": meta,
         "header": header,
@@ -38,6 +42,7 @@ def snapshot_of(run_dir, attention_override=None):
         "unparsed": v["unparsed"],
         "rate_limit": v.get("rate_limit"),
         "live": live,
+        "writing": v.get("writing"),
         "decided": v["decided"],
     }
 
