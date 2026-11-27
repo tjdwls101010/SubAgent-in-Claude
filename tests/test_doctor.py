@@ -76,6 +76,19 @@ class Doctor(Sandbox):
         got = sorted((w["path"].rsplit("/", 2)[-2] if w["path"].endswith("/wt") else w["path"].rsplit("/", 1)[1], w["group"]) for w in d["registry"]["worktrees"])
         self.assertEqual(got, sorted([("fix-1", "fix"), ("fix-db-1", "fix-db"), (reply["runs"][0]["run_id"], "cx")]))
 
+    def test_a_resumed_members_checkout_stays_with_the_group_that_made_it(self):
+        from support.harness import CODEX_RUN
+
+        reply = self.cli_json("batch", *CODEX_RUN, "--group", "a", "--worktree", "--task", "x", timeout=120)
+        first = reply["runs"][0]
+        self.wait_state(first["run_id"])
+        tasks = self.root / "resume.jsonl"
+        tasks.write_text(json.dumps({"prompt": "more", "kind": "resume", "resume": first["run_id"]}) + "\n")
+        again = self.cli_json("batch", "--group", "b", "--tasks-file", str(tasks), timeout=120)
+        self.wait_state(again["runs"][0]["run_id"])
+        owners = {w["path"]: w["group"] for w in self.doctor()["registry"]["worktrees"]}
+        self.assertEqual(owners.get(first["worktree"]), "a")
+
     def test_registry_live_runs(self):
         live = self.start("x [[fake:sleep:30]]")
         d = self.doctor()

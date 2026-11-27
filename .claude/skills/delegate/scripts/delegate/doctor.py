@@ -45,6 +45,9 @@ def doctor(*, cwd, engine=None, runs_dir=None):
     owner = {}
     for g in groups:
         for slot in g.get("members") or []:
+            if slot.get("kind", "start") != "start":
+                # A resumed member works in a checkout an earlier group made, which stays that group's.
+                continue
             path = (slot.get("worktree") or {}).get("path")
             if not path and slot.get("run_id"):
                 try:
