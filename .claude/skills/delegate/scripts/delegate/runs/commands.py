@@ -6,9 +6,9 @@ import time
 from pathlib import Path
 
 from delegate.engine import adapter, record_stopped, signal_ladder
-from delegate.errors import Refusal
+from delegate.errors import NotFound, Refusal
 from delegate.git import is_worktree, uncommitted_count
-from delegate.registry import TERMINAL, find_run, reap, registry_args, resolve_runs_dir, update_meta, worker_alive
+from delegate.registry import TERMINAL, find_run, newest_on, reap, registry_args, resolve_runs_dir, supervisor_alive, update_meta, worker_alive
 from delegate.util import invocation, now, process_command, timings
 
 from .create import create_run, default_cwd, refuse_inside_worker, start_reply
@@ -39,11 +39,20 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
     """Run another turn on an existing session or thread as a new run, re-sending its settings. `ref` is a run, a native id the registry knows, or the native id of one it never saw — then `engine`, a profile and a working directory must be given (and whatever else that engine cannot recover; see `resume --help`)."""
     registry = resolve_runs_dir(cwd, runs_dir)
     try:
-        newest = reap(find_run(registry, ref))
+        newest = reap(find_run(registry, ref, engine=engine))
         if newest.get("native_id"):
-            newest = reap(find_run(registry, newest["native_id"]))
-    except Refusal:
+            # The session or thread goes on from its newest run, of the same engine, whichever of its runs `ref` named.
+            newest = reap(newest_on(registry, newest["engine"], newest["native_id"]))
+    except NotFound:
         newest = None
+        if engine:
+            other = None
+            try:
+                other = reap(find_run(registry, ref))
+            except NotFound:
+                pass
+            if other is not None:
+                raise Refusal(f"{ref} is a {other.get('engine')} run; --engine {engine} cannot continue it", arguments=True, help="resume --help", **other_engine_instead(other, engine, registry))
     if newest is not None:
         if engine and engine != newest.get("engine"):
             raise Refusal(f"{ref} is a {newest.get('engine')} run; --engine {engine} cannot continue it", arguments=True, help="resume --help", **other_engine_instead(newest, engine, registry))
@@ -82,7 +91,18 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
     extra = {}
     if group_index is not None:
         extra["group_index"] = group_index
-    meta = create_run(runs_dir=registry, engine_name=engine, kind="resume", prompt=prompt, settings=settings, cwd=run_cwd, launch_cwd=launch_cwd, expect_cwd=expect_cwd, native_id=native_id, label=label or (newest or {}).get("label"), timeout=timeout, previous=(newest or {}).get("run_id"), group=group or (newest or {}).get("group"), worktree=wt, group_info=group_info, worktree_info=worktree_info, extra_meta=extra, precheck=worktree_check, on_published=on_published)
+
+    def precheck():
+        # Under the publish lock: the settings were read from `newest`; a turn published since would carry newer ones (a changed profile), and this one would quietly undo them.
+        if newest is not None and newest_on(registry, engine, native_id) != str(Path(registry) / newest["run_id"]):
+            raise Refusal(f"{engine} {native_id} had another turn after this resume read its settings; resume again to continue from that one", native_id=native_id)
+        if worktree_check:
+            worktree_check()
+
+    if timeout is None and newest:
+        timeout = (newest.get("settings") or {}).get("timeout")
+    time.sleep(timings()["pause_before_resume_publish"])
+    meta = create_run(runs_dir=registry, engine_name=engine, kind="resume", prompt=prompt, settings=settings, cwd=run_cwd, launch_cwd=launch_cwd, expect_cwd=expect_cwd, native_id=native_id, label=label or (newest or {}).get("label"), timeout=timeout, previous=(newest or {}).get("run_id"), group=group or (newest or {}).get("group"), worktree=wt, group_info=group_info, worktree_info=worktree_info, extra_meta=extra, precheck=precheck, on_published=on_published)
     reply = start_reply(meta, registry)
     if settings["changed"].get("profile"):
         reply["profile_changed_from"] = settings["changed"]["profile"]
@@ -105,14 +125,18 @@ def stop_one(run_dir):
         still = worker_alive(meta)
     pgid, pid = meta.get("worker_pgid"), meta.get("worker_pid")
     command = process_command(pid) if pid else None
-    if pgid and pid and still and not adapter(meta["engine"]).is_worker_command(command):
-        # meta.json lies inside a writer's working directory; never signal a process group that is not the worker this run started.
-        entry.update({"state": meta.get("state"), "note": f"the recorded process {pid} is not {meta['engine']} ({(command or '?')[:80]}); not signalled"})
+    ours = command is not None and adapter(meta["engine"]).is_worker_command(command)
+    if pgid and pid and still and command is not None and not ours and not supervisor_alive(meta):
+        # meta.json lies inside a writer's working directory; never signal a process group that is not the worker this run started. With its supervisor alive the run is still owned (the worker may just have exited), and the supervisor ends it.
+        entry.update({"state": meta.get("state"), "note": f"the recorded process {pid} is not {meta['engine']} ({command[:80]}); not signalled"})
         return entry
-    if pgid and pid:
+    signalled = False
+    if pgid and pid and still and ours:
         entry["signals_sent"] = signal_ladder(pgid, pid)
-    # The supervisor records the outcome once the worker exits; when it is gone, record it here.
-    end = now() + timings()["kill_grace"] + 5
+        signalled = True
+    # The supervisor records the outcome once the worker exits; when it is gone, record it here. A supervisor that saw the request ends its child itself — the one way when this process could not tell the child is the worker (`ps` unreadable) — so it gets its whole ladder.
+    t = timings()
+    end = now() + t["kill_grace"] + 5 + (0 if signalled or not supervisor_alive(meta) else 2 * t["stop_grace"] + 3 * t["kill_grace"] + 1)
     while now() < end:
         meta = reap(run_dir)
         if meta.get("state") in TERMINAL:

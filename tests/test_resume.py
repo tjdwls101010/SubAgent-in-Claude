@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import uuid
 
-from support.harness import Sandbox
+from support.harness import CLAUDE_RUN, ENTRY, FAST_TIMINGS, Sandbox
 
 
 def worker_calls(calls):
@@ -103,3 +105,33 @@ class Resume(Sandbox):
         again = self.cli_json("resume", first["run_id"], "carry on [[fake:reply:resumed]]")
         self.assertEqual(self.wait_state(again["run_id"])["state"], "completed")
         self.assertEqual(self.cli("result", "--run", again["run_id"]).stdout.split("\n", 1)[1], "resumed\n")
+
+    def test_a_resume_that_read_stale_settings_is_refused(self):
+        """A resume publishes only if the session's newest run is still the one it read its settings from: otherwise a turn that changed them (here to read-only) would be quietly undone."""
+        first = self.start("x", "--profile", "write")
+        self.wait_state(first["run_id"])
+        env = {**self.env, "DELEGATE_TEST_TIMINGS": json.dumps({**FAST_TIMINGS, "pause_before_resume_publish": 4})}
+        slow = subprocess.Popen([sys.executable, str(ENTRY), "resume", first["run_id"], "slow"], cwd=self.project, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: slow.poll() is None and slow.kill())
+        import time
+
+        time.sleep(1)
+        quick = self.cli_json("resume", first["run_id"], "quick", "--profile", "read-only")
+        self.wait_state(quick["run_id"])
+        out, _ = slow.communicate(timeout=60)
+        self.assertEqual(slow.returncode, 1, out)
+        self.assertIn("had another turn", json.loads(out)["error"])
+
+    def test_the_timeout_is_inherited(self):
+        first = self.start("x", "--timeout", "1.5")
+        self.wait_state(first["run_id"])
+        again = self.cli_json("resume", first["run_id"], "long [[fake:sleep:6]]")
+        self.assertEqual(self.wait_state(again["run_id"], timeout=30)["state"], "timed_out")
+
+    def test_an_unreadable_live_run_on_the_session_blocks_a_resume(self):
+        first = self.start("x [[fake:sleep:20]]")
+        self.wait_for(lambda: self.events(first["run_id"]), what="its first events")
+        (self.run_dir(first["run_id"]) / "meta.json").write_text("{damaged")
+        out = self.cli_json("resume", first["native_id"], "y", "--engine", "claude", "--profile", "write", "--cwd", str(self.project), "--effort", "high", expect=1)
+        self.assertIn("cannot tell whether", out["error"])
+

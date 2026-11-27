@@ -11,7 +11,7 @@ from pathlib import Path
 from delegate.engine import adapter, inside_worker
 from delegate.errors import Refusal
 from delegate.git import toplevel
-from delegate.registry import TERMINAL, is_live, live_runs, publish_run, read_meta, registry_args, update_meta
+from delegate.registry import TERMINAL, is_live, live_runs, publish_run, read_meta, registry_args, unreadable_runs, update_meta
 from delegate.util import entry_path, invocation, now, timings
 
 WRITERS = ("write", "full")
@@ -24,11 +24,21 @@ def refuse_inside_worker():
         raise Refusal(f"this command runs inside worker run {run}; a worker cannot start, steer, stop or clean workers", inside_run=run)
 
 
-def refuse_live(engine, runs_dir):
-    def check(existing):
-        for meta in existing:
-            if is_live(meta):
-                raise Refusal(f"{meta.get('engine')} {meta.get('native_id')} has a live run {meta.get('run_id')} ({meta.get('state')}{', still writing' if meta.get('state') in TERMINAL else ''}); two processes on one session or thread mix their transcripts", run_id=meta.get("run_id"), state=meta.get("state"), **engine.live_instead(meta.get("run_id"), meta, runs_dir))
+def refuse_live(engine, runs_dir, native_id):
+    """The publish-time check for a turn on `native_id`: refused while another run of the same engine is live on it — one recorded on it, one whose meta has not caught up with the id its events already name (a Codex thread id arrives after launch), or one whose meta.json does not parse but whose events name it."""
+
+    def check(runs):
+        if not native_id:
+            return
+        for d, meta in runs:
+            if meta.get("engine") != engine.NAME or not is_live(meta):
+                continue
+            if meta.get("native_id") == native_id or (meta.get("native_id") is None and engine.discover_native_id(d) == native_id):
+                raise Refusal(f"{engine.NAME} {native_id} has a live run {meta.get('run_id')} ({meta.get('state')}{', still writing' if meta.get('state') in TERMINAL else ''}); two processes on one session or thread mix their transcripts", run_id=meta.get("run_id"), state=meta.get("state"), **engine.live_instead(meta.get("run_id"), meta, runs_dir))
+        # 성진: an unreadable run whose events do not name its session or thread yet is taken as someone else's; refuse it too if a real case shows such a run was on the same one.
+        blind = [d for d in unreadable_runs(runs_dir) if engine.discover_native_id(d) == native_id]
+        if blind:
+            raise Refusal(f"cannot tell whether {native_id} is free: these runs on it have a meta.json that does not parse; repair or remove them", unreadable_runs=blind)
 
     return check
 
@@ -108,14 +118,14 @@ def create_run(*, runs_dir, engine_name, kind, prompt, settings, cwd, native_id=
         first["text"] = text
         return meta
 
-    live_check = refuse_live(engine, runs_dir)
+    live_check = refuse_live(engine, runs_dir, native_id)
 
-    def check(existing):
-        live_check(existing)
+    def check(runs):
+        live_check(runs)
         if precheck:
             precheck()
 
-    run_id, run_dir, meta = publish_run(runs_dir, native_id, label, check, make_meta)
+    run_id, run_dir, meta = publish_run(runs_dir, label, check, make_meta)
     if on_published:
         on_published(meta)
     time.sleep(timings()["pause_after_publish"])

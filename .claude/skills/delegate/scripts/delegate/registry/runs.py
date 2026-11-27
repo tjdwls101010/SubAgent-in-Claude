@@ -12,7 +12,7 @@ import secrets
 import time
 from pathlib import Path
 
-from delegate.errors import Refusal
+from delegate.errors import NotFound, Refusal
 from delegate.git import main_checkout
 from delegate.util import iso, now, pid_alive
 
@@ -112,19 +112,25 @@ def is_live(meta):
 
 
 def reap(run_dir):
-    """Record `orphaned` for a run whose supervisor is gone without recording an outcome, with what it left undelivered. Returns the meta as it now stands."""
+    """Record `orphaned` for a run whose supervisor is gone without recording an outcome, with what it left undelivered. Returns the meta as it now stands. The decision is made again under the run's lock, so a supervisor that records itself in between is never taken for dead."""
     meta = read_meta(run_dir)
+    if not _abandoned(meta):
+        return meta
+
+    def orphan(m):
+        if _abandoned(m):
+            inbox = sorted(p.name for p in (Path(run_dir) / "inbox").glob("*.json")) if (Path(run_dir) / "inbox").is_dir() else []
+            m.update({"state": "orphaned", "ended_at": now(), "error": "the supervisor died before recording an outcome", "undelivered": [n.split("-", 1)[1][:-5] for n in inbox]})
+
+    return update_meta(run_dir, orphan)
+
+
+def _abandoned(meta):
     if meta.get("state") in TERMINAL:
-        return meta
+        return False
     if meta.get("supervisor_pid"):
-        if supervisor_alive(meta):
-            return meta
-    elif now() - (meta.get("created_at") or 0) < UNSUPERVISED_GRACE:
-        return meta
-    inbox = sorted(p.name for p in (Path(run_dir) / "inbox").glob("*.json")) if (Path(run_dir) / "inbox").is_dir() else []
-    fields = {"state": "orphaned", "ended_at": now(), "error": "the supervisor died before recording an outcome", "undelivered": [n.split("-", 1)[1][:-5] for n in inbox]}
-    record_if_active(run_dir, fields)
-    return read_meta(run_dir)
+        return not supervisor_alive(meta)
+    return now() - (meta.get("created_at") or 0) >= UNSUPERVISED_GRACE
 
 
 def new_run_id(label=None):
@@ -132,11 +138,10 @@ def new_run_id(label=None):
     return f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}-{secrets.token_hex(2)}"
 
 
-def publish_run(runs_dir, native_id, label, check, make_meta):
-    """Create a run under the registry's publish lock: `check(existing metas on native_id)` may refuse (none for a run whose engine names it only after launch), then a fresh run directory is claimed and `make_meta(run_id, run_dir)` written as its meta.json. Returns (run_id, run_dir, meta)."""
+def publish_run(runs_dir, label, check, make_meta):
+    """Create a run under the registry's publish lock: `check(runs)` sees every readable run as (run_dir, meta), reaped, and may refuse; then a fresh run directory is claimed and `make_meta(run_id, run_dir)` written as its meta.json. Returns (run_id, run_dir, meta)."""
     with publish_lock(runs_dir):
-        existing = [reap(d) for d, m in iter_runs(runs_dir) if native_id and m.get("native_id") == native_id] if native_id else []
-        check(existing)
+        check([(d, reap(d)) for d, _ in iter_runs(runs_dir)])
         for _ in range(20):
             run_id = new_run_id(label)
             run_dir = Path(runs_dir) / run_id
@@ -189,27 +194,35 @@ def unreadable_runs(runs_dir):
     return out
 
 
-def find_run(runs_dir, ref):
-    """The run directory `ref` names: a run id, a native id (its newest run), or a prefix of either that picks one run or one native id. Refusal otherwise."""
+def find_run(runs_dir, ref, engine=None):
+    """The run directory `ref` names: a run id, a native id (its newest run; of `engine` when given), or a prefix of either that picks one run or one native id. NotFound when nothing matches; Refusal when a prefix matches more than one."""
     if not ref:
         raise Refusal("no run named", arguments=True)
-    exact = Path(runs_dir) / ref
-    if (exact / "meta.json").exists():
-        return str(exact)
-    runs = iter_runs(runs_dir)
-    by_native = [d for d, m in runs if m.get("native_id") == ref]
+    if "/" not in ref and ref not in (".", ".."):
+        exact = Path(runs_dir) / ref
+        if (exact / "meta.json").exists():
+            return str(exact)
+    runs = [(d, m) for d, m in iter_runs(runs_dir)]
+    natives = [(d, m) for d, m in runs if engine is None or m.get("engine") == engine]
+    by_native = [d for d, m in natives if m.get("native_id") == ref]
     if by_native:
         return by_native[-1]
     ids = [d for d, m in runs if Path(d).name.startswith(ref)]
-    natives = {m.get("native_id") for d, m in runs if (m.get("native_id") or "").startswith(ref)}
-    if len(ids) == 1 and not natives - {read_json(Path(ids[0]) / "meta.json").get("native_id")}:
+    prefixed = {(m.get("engine"), m.get("native_id")) for d, m in natives if (m.get("native_id") or "").startswith(ref)}
+    if len(ids) == 1 and not prefixed - {(read_json(Path(ids[0]) / "meta.json").get("engine"), read_json(Path(ids[0]) / "meta.json").get("native_id"))}:
         return ids[0]
-    if not ids and len(natives) == 1:
-        nid = natives.pop()
-        return [d for d, m in runs if m.get("native_id") == nid][-1]
-    if ids or natives:
-        raise Refusal(f"{ref!r} matches more than one run; give more of the id", matches=sorted({Path(d).name for d in ids} | natives)[:10])
-    raise Refusal(f"no run, session or thread {ref!r} in {runs_dir}")
+    if not ids and len(prefixed) == 1:
+        eng, nid = prefixed.pop()
+        return [d for d, m in natives if m.get("native_id") == nid and m.get("engine") == eng][-1]
+    if ids or prefixed:
+        raise Refusal(f"{ref!r} matches more than one run; give more of the id", matches=sorted({Path(d).name for d in ids} | {n for _, n in prefixed})[:10])
+    raise NotFound(f"no run, session or thread {ref!r} in {runs_dir}")
+
+
+def newest_on(runs_dir, engine, native_id):
+    """The newest run of `engine` on `native_id`, or None."""
+    found = [d for d, m in iter_runs(runs_dir) if m.get("engine") == engine and m.get("native_id") == native_id]
+    return found[-1] if found else None
 
 
 def live_runs(runs_dir):

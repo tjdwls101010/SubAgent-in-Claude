@@ -14,3 +14,7 @@ class Refusal(Exception):
 
     def reply(self):
         return {"error": self.message, **self.fields}
+
+
+class NotFound(Refusal):
+    """No run, session or thread by that name in the registry — the one refusal a caller may take as "not registered" rather than as a problem with what is there."""

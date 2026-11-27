@@ -52,7 +52,7 @@ class Runs(unittest.TestCase):
         self.runs = str(self.root / ".delegate-runs")
 
     def publish(self, session="s1", label="t", state="starting", **meta):
-        return reg.publish_run(self.runs, session, label, lambda existing: None, lambda rid, rdir: {"engine": "claude", "native_id": session, "state": state, "stdin_open": True, **meta})
+        return reg.publish_run(self.runs, label, lambda runs: None, lambda rid, rdir: {"engine": "claude", "native_id": session, "state": state, "stdin_open": True, **meta})
 
     def test_publish_claims_a_directory_and_writes_meta(self):
         run_id, run_dir, meta = self.publish(label="My Label!")
@@ -60,26 +60,27 @@ class Runs(unittest.TestCase):
         self.assertTrue((Path(run_dir) / "inbox").is_dir())
         self.assertEqual(reg.read_meta(run_dir)["run_id"], run_id)
 
-    def test_check_sees_the_native_id_and_can_refuse(self):
+    def test_check_sees_every_run_and_can_refuse(self):
         self.publish(session="s1")
+        self.publish(session="s2")
         seen = []
 
-        def check(existing):
-            seen.extend(existing)
+        def check(runs):
+            seen.extend(m["native_id"] for _, m in runs)
             raise Refusal("busy")
 
         with self.assertRaises(Refusal):
-            reg.publish_run(self.runs, "s1", "t", check, lambda r, d: {"native_id": "s1"})
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(len(reg.iter_runs(self.runs)), 1)
+            reg.publish_run(self.runs, "t", check, lambda r, d: {"native_id": "s1"})
+        self.assertEqual(sorted(seen), ["s1", "s2"])
+        self.assertEqual(len(reg.iter_runs(self.runs)), 2, "a refused check claims nothing")
 
-    def test_a_run_named_after_launch_sees_no_existing_runs(self):
-        """A Codex thread is named only once the run starts, so a fresh start has nothing to be checked against."""
-        self.publish(session="s1")
+    def test_a_dead_supervisor_is_reaped_before_the_check_sees_it(self):
+        p = subprocess.Popen(["true"], start_new_session=True)
+        p.wait()
+        self.publish(session="s1", supervisor_pid=p.pid, supervisor_pgid=p.pid, state="running")
         seen = []
-        reg.publish_run(self.runs, None, "t", lambda existing: seen.extend(existing), lambda r, d: {"native_id": None, "state": "starting"})
-        self.assertEqual(seen, [])
-        self.assertEqual(len(reg.iter_runs(self.runs)), 2)
+        reg.publish_run(self.runs, "t", lambda runs: seen.extend(m["state"] for _, m in runs), lambda r, d: {"native_id": None, "state": "starting"})
+        self.assertEqual(seen, ["orphaned"])
 
     def test_first_outcome_wins(self):
         _, run_dir, _ = self.publish(supervisor_pid=os.getpid(), supervisor_pgid=os.getpgid(0))
@@ -126,8 +127,19 @@ class Runs(unittest.TestCase):
         with self.assertRaises(Refusal) as e:
             reg.find_run(self.runs, a[:9])
         self.assertIn("more than one", e.exception.message)
-        with self.assertRaises(Refusal):
+        with self.assertRaises(engine("delegate.errors").NotFound):
             reg.find_run(self.runs, "zzzz")
+        with self.assertRaises(engine("delegate.errors").NotFound, msg="a path is never a run id"):
+            reg.find_run(self.runs, "../" + Path(self.runs).name + "/" + a)
+
+    def test_native_ids_are_qualified_by_engine(self):
+        c, cdir, _ = self.publish(session="same-id", label="c")
+        time.sleep(0.01)
+        x, xdir, _ = reg.publish_run(self.runs, "x", lambda runs: None, lambda r, d: {"engine": "codex", "native_id": "same-id", "state": "completed"})
+        self.assertEqual(reg.find_run(self.runs, "same-id"), xdir, "without an engine, the newest")
+        self.assertEqual(reg.find_run(self.runs, "same-id", engine="claude"), cdir)
+        self.assertEqual(reg.newest_on(self.runs, "claude", "same-id"), cdir)
+        self.assertIsNone(reg.newest_on(self.runs, "claude", "other"))
 
     def test_unparsable_meta_is_named(self):
         _, run_dir, _ = self.publish()
@@ -141,7 +153,7 @@ class Inbox(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        _, self.run_dir, _ = reg.publish_run(str(self.root / "runs"), "s", "t", lambda e: None, lambda r, d: {"native_id": "s", "state": "running", "stdin_open": True})
+        _, self.run_dir, _ = reg.publish_run(str(self.root / "runs"), "t", lambda runs: None, lambda r, d: {"native_id": "s", "state": "running", "stdin_open": True})
 
     def test_queue_deliver_close(self):
         self.assertIsNone(reg.enqueue(self.run_dir, "u1", "first", kind="prompt"))

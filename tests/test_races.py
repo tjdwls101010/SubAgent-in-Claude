@@ -21,12 +21,12 @@ from delegate.errors import Refusal
 runs, start = sys.argv[1], float(sys.argv[2])
 while time.time() < start:
     time.sleep(0.001)
-def check(existing):
-    if any(is_live(m) for m in existing):
+def check(runs):
+    if any(is_live(m) for _, m in runs if m.get("native_id") == "same-session"):
         raise Refusal("busy")
     time.sleep(0.2)  # widen the window between check and claim
 try:
-    rid, _, _ = publish_run(runs, "same-session", "race", check, lambda r, d: {"native_id": "same-session", "state": "starting", "supervisor_pid": __import__("os").getpid()})
+    rid, _, _ = publish_run(runs, "race", check, lambda r, d: {"native_id": "same-session", "state": "starting", "supervisor_pid": __import__("os").getpid(), "supervisor_pgid": __import__("os").getpgid(0)})
     print(json.dumps({"claimed": rid}))
 except Refusal as e:
     print(json.dumps({"refused": e.message}))
