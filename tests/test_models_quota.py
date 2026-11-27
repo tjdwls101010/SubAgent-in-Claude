@@ -63,6 +63,8 @@ class CodexLimit(Sandbox):
         self.assertTrue(out["resets_at"])
         self.assertIn("start --engine claude", out["instead"])
         self.assertIn(f"--cwd {self.project}", out["instead"])
+        review = self.codex("start", "x", "--profile", "read-only", env=env, expect=1)
+        self.assertIn("--profile read-only", review["instead"], "a read-only review handed over stays read-only; start alone would default to write")
         self.assertEqual(self.codex_calls(), [], "nothing started")
         ok = self.start("the other engine still starts", env=env)
         self.wait_state(ok["run_id"])
@@ -121,6 +123,7 @@ class CodexLimit(Sandbox):
         self.assertIn("usage limit", header["error"])
         self.assertTrue(header["resets_at"], "from the time the failure names (4:31 AM)")
         self.assertIn("start --engine claude", header["instead"])
+        self.assertIn("--profile write", header["instead"])
         self.assertIn("unverified draft", header["why"])
 
     def test_in_a_mixed_group_it_returns_the_wait_at_once(self):

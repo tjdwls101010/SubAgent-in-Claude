@@ -48,10 +48,10 @@ def other_engine(name):
     return next((n for n in ENGINES if n != name), None)
 
 
-def handover(engine_name, cwd, runs_dir):
-    """The start that hands the work to the other engine in the same directory: its model, effort and the brief are the caller's to fill in."""
+def handover(engine_name, cwd, runs_dir, profile=None):
+    """The start that hands the work to the other engine in the same directory, under the same profile — `start` defaults to write, so a read-only review handed over must not become a writer: its model, effort and the brief are the caller's to fill in."""
     other = other_engine(engine_name)
-    return {"instead": invocation("start", "--engine", other, "--model", "<model>", "--effort", "<effort>", "--cwd", cwd, "<prompt>", *registry_args(runs_dir)), "why": f"the {other} engine draws on another account's limits; it is another model family, which matters when this was to be an independent check"}
+    return {"instead": invocation("start", "--engine", other, "--model", "<model>", "--effort", "<effort>", "--profile", profile or "<profile>", "--cwd", cwd, "<prompt>", *registry_args(runs_dir)), "why": f"the {other} engine draws on another account's limits; it is another model family, which matters when this was to be an independent check"}
 
 
 # How old a limits reading may be and still refuse a start: a limit can reset, be raised or be paid past, and a start it refuses writes no new reading.
@@ -63,7 +63,7 @@ def refuse_exhausted(engine, settings, runs_dir, cwd):
     q = engine.quota(settings.get("model"), runs_dir)
     resets, observed = q.get("resets_at"), q.get("observed_at")
     if q.get("state") == "exhausted" and resets and resets > now() and observed and now() - observed <= QUOTA_FRESH:
-        raise Refusal("quota_exhausted", detail=f"the {engine.NAME} limit ({q.get('scope')}) is used up until {iso(resets)}", engine=engine.NAME, resets_at=iso(resets), observed_at=iso(q.get("observed_at")), source=q.get("source"), **handover(engine.NAME, cwd, runs_dir))
+        raise Refusal("quota_exhausted", detail=f"the {engine.NAME} limit ({q.get('scope')}) is used up until {iso(resets)}", engine=engine.NAME, resets_at=iso(resets), observed_at=iso(q.get("observed_at")), source=q.get("source"), **handover(engine.NAME, cwd, runs_dir, settings.get("profile")))
 
 
 def default_cwd(cwd):
