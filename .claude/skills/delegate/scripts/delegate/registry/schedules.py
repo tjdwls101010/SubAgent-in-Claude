@@ -199,8 +199,8 @@ def read_definition(registry, name):
     return (schedule_state(registry, name) or {}).get("definition")
 
 
-def take_over_legacy_state(registry, name, legacy_registry):
-    """What the `claude` skill recorded of schedule `name` — its filled slots, and its jobs marked legacy with how each one's run ended — as this skill's record, when this skill holds none of its own yet; then the old record's definition is cleared, so a job the old command still runs leaves the schedule alone at its end. Call under schedule_lock. Returns whether there was an old record."""
+def take_over_legacy_state(registry, name, legacy_registry, keep_definition=False):
+    """What the `claude` skill recorded of schedule `name` — its filled slots, and its jobs marked legacy with how each one's run ended — as this skill's record, when this skill holds none of its own yet; then the old record's definition is cleared, so a job the old command still runs leaves the schedule alone at its end. `keep_definition` is a move's: the new record takes the old definition, which the old record keeps for a rollback. Call under schedule_lock. Returns whether there was an old record."""
     old_path = Path(legacy_registry) / ".schedules" / name / "state.json"
     with locked(Path(legacy_registry) / ".locks" / f"schedule-{name}.lock"):
         old = read_json(old_path)
@@ -212,8 +212,8 @@ def take_over_legacy_state(registry, name, legacy_registry):
             for job, rec in (old.get("jobs") or {}).items():
                 ended = (read_json(Path(legacy_registry) / rec["run_id"] / "meta.json") or {}).get("state") if rec.get("run_id") else None
                 jobs[job] = {**rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
-            _save(registry, name, {"name": name, "last_slot": old.get("last_slot"), "slots": old.get("slots") or {}, "jobs": jobs, "definition": (current or {}).get("definition")})
-        if old.get("definition") is not None:
+            _save(registry, name, {"name": name, "last_slot": old.get("last_slot"), "slots": old.get("slots") or {}, "jobs": jobs, "definition": old.get("definition") if keep_definition else (current or {}).get("definition")})
+        if old.get("definition") is not None and not keep_definition:
             write_json(old_path, {**old, "definition": None})
         return True
 
