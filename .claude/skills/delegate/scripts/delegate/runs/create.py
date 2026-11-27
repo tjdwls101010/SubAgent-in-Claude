@@ -33,7 +33,8 @@ def refuse_live(engine, runs_dir, native_id):
         for d, meta in runs:
             if meta.get("engine") != engine.NAME or not is_live(meta):
                 continue
-            if native_id in (meta.get("native_id"), meta.get("resume_ref")) or (meta.get("native_id") is None and engine.discover_native_id(d) == native_id):
+            # Its record, what it was asked to resume, or what its events already name (a Codex thread id arrives after launch, and a thread asked for by name answers with its id).
+            if native_id in (meta.get("native_id"), meta.get("resume_ref")) or engine.discover_native_id(d) == native_id:
                 raise Refusal(f"{engine.NAME} {native_id} has a live run {meta.get('run_id')} ({meta.get('state')}{', still writing' if meta.get('state') in TERMINAL else ''}); two processes on one session or thread mix their transcripts", run_id=meta.get("run_id"), state=meta.get("state"), **engine.live_instead(meta.get("run_id"), meta, runs_dir))
         # 성진: an unreadable run whose events do not name its session or thread yet is taken as someone else's; refuse it too if a real case shows such a run was on the same one.
         blind = [d for d in unreadable_runs(runs_dir) if engine.discover_native_id(d) == native_id]

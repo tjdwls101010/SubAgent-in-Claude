@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from delegate.registry import find_run, registry_args, resolve_runs_dir, worker_alive
+from delegate.registry import find_run, registry_args, resolve_runs_dir
 from delegate.util import invocation
 
 from .snapshot import snapshot_of
@@ -18,7 +18,7 @@ def registry_of(run_dir):
 def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=None):
     snap = snapshot_of(run_dir, attention_override=wait_attention)
     meta, header, text = snap["meta"], snap["header"], snap["text"]
-    if snap["live"] or worker_alive(meta):
+    if snap["live"] or snap["writing"]:
         args = ["result", "--run", meta["run_id"], "--wait", *registry_args(registry_of(run_dir))]
         if wait_timeout:
             args += ["--wait-timeout", f"{wait_timeout:g}"]
@@ -29,7 +29,7 @@ def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=N
         # The whole header, then the structured output in place of the text.
         doc = dict(header)
         doc["json"] = snap["json"]
-        if not snap["live"] and not worker_alive(meta) and snap["json"] is None:
+        if snap["decided"] and snap["json"] is None:
             # Read, so not a refusal: the run ended without the structured output its schema asked for, and its text is what there is.
             doc["note"] = "the run ended without structured output; `message` is its final text"
             doc["message"] = text

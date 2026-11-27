@@ -18,6 +18,20 @@ MARKER = "DELEGATE_RUN"
 OTHER_MARKERS = ("CLAUDE_SKILL_RUN",)
 
 
+def boot_time():
+    """When this Mac last booted (epoch seconds), or None: a process group id recorded before it names nothing of ours."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    import re
+
+    m = re.search(r"sec = (\d+)", out)
+    return int(m.group(1)) if m else None
+
+
 def markers(run_id):
     return {MARKER: run_id, **{name: run_id for name in OTHER_MARKERS}}
 
@@ -220,6 +234,9 @@ def supervise(run_dir, adapter):
             fields.update({"state": "timed_out", "error": f"timed out: its --timeout of {m['settings'].get('timeout'):g} s passed"})
         fields.setdefault("exit_code", returncode)
         fields.setdefault("ended_at", now())
+        if group_alive(proc.pid):
+            # Something the worker started outlived it in its process group (a server a turn left running): recorded, so a later `stop` may end it — and only then, since an old group id is never taken as proof on its own.
+            fields["leftover_group"] = {"pgid": proc.pid, "boot": boot_time()}
         if fields.get("state") == "failed" and stderr_tail and "stderr_tail" not in fields:
             fields["stderr_tail"] = stderr_tail[-600:]
         m.update(fields)

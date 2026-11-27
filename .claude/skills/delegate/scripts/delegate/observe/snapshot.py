@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from delegate.engine import adapter
-from delegate.registry import TERMINAL, find_run, resolve_runs_dir, worker_alive
+from delegate.registry import TERMINAL, find_run, resolve_runs_dir
 from delegate.util import now
 
 from .rows import attention, last_event_at, load
@@ -30,7 +30,7 @@ def snapshot_of(run_dir, attention_override=None):
         header["unparsed_events"] = v["unparsed"]
     if live:
         header["note"] = "the answer is in, but the worker is still running something" if v["decided"] else "the run is live: this is its latest message, not its answer"
-    elif worker_alive(meta):
+    elif v.get("writing"):
         header["note"] = "the run is recorded ended, but its worker still runs: this is its latest message, not its answer"
     return {
         "meta": meta,
@@ -42,6 +42,7 @@ def snapshot_of(run_dir, attention_override=None):
         "unparsed": v["unparsed"],
         "rate_limit": v.get("rate_limit"),
         "live": live,
+        "writing": v.get("writing"),
         "decided": v["decided"],
     }
 

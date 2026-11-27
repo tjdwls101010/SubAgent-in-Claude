@@ -59,7 +59,7 @@ def settings(flags, record=None, *, command="start", cwd=None):
     for key in ("model", "effort"):
         if not out[key]:
             why = "this thread is not in the registry and an isolated run reads no config.toml, so its" if resume else "there is no default"
-            raise Refusal(f"--{key} is required: {why} {key}; `models --engine codex` lists them", arguments=True, help=f"{command} --help")
+            raise Refusal(f"--{key} is required: {why} {key}; `codex debug models` lists them", arguments=True, help=f"{command} --help")
     if out["profile"] not in SANDBOX:
         raise Refusal(f"unknown profile {out['profile']!r}", arguments=True, help=f"{command} --help")
     adopted_model = flags.get("model")
@@ -310,6 +310,7 @@ def view(run_dir, meta):
         "lines": event_lines(run_dir / "events.jsonl", Path(cwd) if cwd else None),
         "unparsed": info["unparsed_events"],
         "retrying": False,
+        "writing": writing,
         "rate_limit": None,
         "header": header,
         "row": row,

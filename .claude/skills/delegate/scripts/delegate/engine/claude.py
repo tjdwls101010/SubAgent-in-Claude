@@ -403,7 +403,8 @@ def view_of(events, meta, unparsed=0):
     final = final_result(events, meta.get("messages") or [])
     live = meta.get("state") not in TERMINAL
     # Once stdin has closed (finishing) the answer is decided; whatever claude still prints is not it. An orphan whose claude still runs has not decided.
-    decided = (not live and not worker_alive(meta)) or meta.get("state") == "finishing"
+    writing = worker_alive(meta)
+    decided = (not live and not writing) or meta.get("state") == "finishing" or bool(meta.get("finishing_since"))
     chosen = final["result"]
     text = chosen["text"] if chosen and decided else (summary["last_message"] or (chosen["text"] if chosen else "")) or ""
     schema = (meta.get("settings") or {}).get("schema_text") is not None
@@ -454,6 +455,7 @@ def view_of(events, meta, unparsed=0):
         "rows": activity_rows(events, rel_to=rel, messages=meta.get("messages") or []),
         "unparsed": unparsed,
         "retrying": summary["last_event_is_retry"] and meta.get("state") != "finishing",
+        "writing": writing,
         "rate_limit": meta.get("rate_limit") or summary["rate_limit"],
         "header": header,
         "row": row,
