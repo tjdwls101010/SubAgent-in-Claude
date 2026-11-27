@@ -47,6 +47,23 @@ class Claims(unittest.TestCase):
         self.assertEqual(late["previous"]["url"], "https://example.invalid/runs/1-1")
         self.assertEqual(registry.read_job(self.reg, "nightly", "2-1")["outcome"]["kind"], "skipped")
 
+    def test_a_recovered_slot_runs_once_however_old_it_is(self):
+        # More slots than the record keeps ran after it: a recovery of that old slot fills it once, and a second dispatch of it finds it filled.
+        base = S3 - 100 * 300
+        for n in range(60):
+            self.claim(S3 + n * 300, f"{n}-1")
+        first = registry.claim_slot(self.reg, "nightly", base, "r-1", self.entry(), exact=True)
+        again = registry.claim_slot(self.reg, "nightly", base, "r-2", self.entry(), exact=True)
+        self.assertEqual((first["decision"], again["decision"]), ("first", "skip"))
+
+    def test_a_pruned_slot_that_ran_is_not_recovered_again(self):
+        self.claim(S3, "1-1")
+        self.run_for("1-1", S3, "completed")
+        for n in range(1, 60):
+            self.claim(S3 + n * 300, f"{n + 1}-1")
+        self.assertNotIn(str(S3), registry.schedule_state(self.reg, "nightly")["slots"], "the record keeps only the newest slots")
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry(), exact=True)["decision"], "skip")
+
     def test_an_older_slot_after_a_newer_one_is_skipped(self):
         # ② an hourly backup 70 minutes late: the 04:00 slot already ran, so the 03:00 trigger finds nothing to fill
         self.claim(S4, "1-1")

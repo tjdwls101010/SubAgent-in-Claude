@@ -72,7 +72,7 @@ def _prune(state):
     for key in ("slots", "jobs"):
         items = state.get(key) or {}
         if len(items) > KEEP:
-            order = sorted(items, key=lambda k: (items[k].get("at") or 0, k)) if key == "jobs" else sorted(items, key=int)
+            order = sorted(items, key=lambda k: (items[k].get("at") or 0, k)) if key == "jobs" else sorted((k for k in items if not items[k].get("exact")), key=int)
             for k in order[: len(items) - KEEP]:
                 del items[k]
 
@@ -134,11 +134,17 @@ def claim_slot(registry, name, slot, job, entry, exact=False):
     with _lock(registry, name):
         state = _load(registry, name)
         claim = state["slots"].get(str(slot))
+        if exact and not (claim or {}).get("job"):
+            # A slot old enough to have been pruned from the record may still have run: the runs' own origins say.
+            claim = _rebuild(registry, name)["slots"].get(str(slot)) or claim
+            if (claim or {}).get("job"):
+                state["slots"][str(slot)] = claim
         rec = {**entry, "slot": slot, "at": now()}
         latest = slot == state["last_slot"] or exact
         if (exact and not (claim or {}).get("job")) or state["last_slot"] is None or slot > state["last_slot"]:
             state["last_slot"] = max(slot, state["last_slot"] or slot)
-            state["slots"][str(slot)] = {"job": job, "retried": None}
+            # A recovered slot is kept however old it is, so a second dispatch of it finds it filled.
+            state["slots"][str(slot)] = {"job": job, "retried": None, **({"exact": True} if exact else {})}
             decision, previous = "first", None
         elif claim and claim.get("job") and latest and not claim.get("retried") and entry.get("profile") == "read-only" and _profile_of(registry, name, state, claim["job"]) == "read-only" and not _completed_or_live(registry, name, state, claim["job"]):
             claim["retried"] = job
