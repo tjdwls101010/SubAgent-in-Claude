@@ -24,7 +24,7 @@ class MixedGroup(Sandbox):
 
     def test_one_group_of_both_engines(self):
         f = self.tasks(
-            {"prompt": "c [[fake:write:shared.txt]] [[fake:reply:from claude]]", "engine": "claude", "model": "test-model", "effort": "high", "label": "cl"},
+            {"prompt": "c [[fake:write:shared.txt]] [[fake:reply:from claude]]", "engine": "claude", "model": "claude-test-model", "effort": "high", "label": "cl"},
             {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high", "label": "cx"},
             {"prompt": "y", "kind": "resume", "resume": "no-such-run", "label": "gone"},
         )
@@ -66,7 +66,7 @@ class MixedGroup(Sandbox):
         self.assertTrue(forced["name_released"])
 
     def test_stop_group_reaches_both_engines(self):
-        f = self.tasks({"prompt": "a [[fake:sleep:30]]", "engine": "claude", "model": "m", "effort": "high"}, {"prompt": "b", "engine": "codex", "model": "fake-big", "effort": "high"})
+        f = self.tasks({"prompt": "a [[fake:sleep:30]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "b", "engine": "codex", "model": "fake-big", "effort": "high"})
         reply = self.cli_json("batch", "--group", "both", "--tasks-file", f, timeout=120, env={"FAKE_CODEX_HANG": "60"})
         header, _ = self.group_result("both")
         self.assertEqual(header["group_state"], "running")

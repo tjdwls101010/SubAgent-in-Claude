@@ -73,10 +73,10 @@ class Start(Sandbox):
     def test_the_named_settings_win_over_the_users(self):
         (self.home / ".claude").mkdir()
         (self.home / ".claude" / "settings.json").write_text(json.dumps({"model": "opus", "effortLevel": "max", "permissions": {"defaultMode": "bypassPermissions"}}))
-        reply = self.start("hi", "--model", "named-model", "--effort", "low")
+        reply = self.start("hi", "--model", "claude-named-model", "--effort", "low")
         self.wait_state(reply["run_id"])
         argv = worker_calls(self.fake_calls())[0]["argv"]
-        self.assertEqual((flag_value(argv, "--model"), flag_value(argv, "--effort"), flag_value(argv, "--permission-mode")), ("named-model", "low", "acceptEdits"))
+        self.assertEqual((flag_value(argv, "--model"), flag_value(argv, "--effort"), flag_value(argv, "--permission-mode")), ("claude-named-model", "low", "acceptEdits"))
 
     def test_worker_environment(self):
         reply = self.start("hi", env=PARENT_IDENTITY)

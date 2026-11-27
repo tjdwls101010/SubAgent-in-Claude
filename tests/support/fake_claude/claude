@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A stand-in for the `claude` CLI, first on PATH in tests.
 
-It records every invocation (argv, cwd, environment, the stdin messages it read) under $FAKE_CLAUDE_STATE/calls/, and answers `-p --input-format stream-json` sessions with events whose shapes are copied from real captures in $FAKE_CLAUDE_FIXTURES. What a turn does is chosen by markers in the message text, `[[fake:<name>]]` or `[[fake:<name>:<arg>]]`:
+It records every invocation (argv, cwd, environment, the stdin messages it read) under $FAKE_CLAUDE_STATE/calls/ — `-p /usage` and `-p /model` under queries/ — and answers `-p --input-format stream-json` sessions with events whose shapes are copied from real captures in $FAKE_CLAUDE_FIXTURES. What a turn does is chosen by markers in the message text, `[[fake:<name>]]` or `[[fake:<name>:<arg>]]`:
 
   reply:TEXT        answer with TEXT (default: "ok: <message>")
   sleep:N           a Bash call that runs N seconds; a message arriving meanwhile with priority "now" aborts the turn, otherwise it joins the same turn
@@ -37,6 +37,8 @@ It records every invocation (argv, cwd, environment, the stdin messages it read)
   delete_after:PATH after commit:MSG, delete PATH
   branch:NAME       after commit:MSG and write_after, switch to a new branch NAME
   ignore_sigint / ignore_sigterm
+
+`claude -p /usage` replays usage.jsonl or FAKE_CLAUDE_USAGE_FILE (FAKE_CLAUDE_USAGE=fail exits 1) and `claude -p /model` model.json (FAKE_CLAUDE_MODEL_LIST=fail exits 1), as the real CLI answers both without a model call.
 
 A model answers no sooner than FAKE_CLAUDE_REPLY_DELAY seconds (default 0.3) after init, as a real first token takes at least that long.
 With FAKE_CLAUDE_STARTUP_LINK=1 a SessionStart hook makes the symlink .claude/histories in cwd before the first init, as the user's history hook does.
@@ -79,7 +81,9 @@ T = {
     "error_result": fixture("sigint.jsonl", 5),
 }
 
-calls_dir = STATE / "calls"
+# A query that starts no session (`-p /usage`, `-p /model`) is recorded apart, under queries/, so what a test reads as the worker calls is only those.
+QUERY = "-p" in sys.argv and sys.argv[-1] in ("/usage", "/model")
+calls_dir = STATE / ("queries" if QUERY else "calls")
 calls_dir.mkdir(parents=True, exist_ok=True)
 record = {"argv": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ), "pid": os.getpid(), "messages": [], "started": time.time()}
 record_path = calls_dir / f"{time.time_ns()}-{os.getpid()}.json"
@@ -132,10 +136,17 @@ if "-p" in sys.argv and sys.argv[-1] == "/usage":
         print("usage unavailable", file=sys.stderr)
         sys.exit(1)
     if flag("--output-format") == "stream-json" and "--verbose" in sys.argv:
-        sys.stdout.write((FIXTURES / "usage.jsonl").read_text())
+        sys.stdout.write(Path(os.environ.get("FAKE_CLAUDE_USAGE_FILE") or FIXTURES / "usage.jsonl").read_text())
     else:
         # Without stream-json the real CLI prints the report as text, with no structured usage_report.
         print("Current session: 31% used\nCurrent week (all models): 47% used")
+    sys.exit(0)
+if "-p" in sys.argv and sys.argv[-1] == "/model":
+    # FAKE_CLAUDE_MODEL_LIST: "fail" exits 1; otherwise the captured answer (model.json).
+    if os.environ.get("FAKE_CLAUDE_MODEL_LIST") == "fail":
+        print("model list unavailable", file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.write((FIXTURES / "model.json").read_text())
     sys.exit(0)
 if "-p" not in sys.argv:
     print("fake claude: only -p, --version and auth status", file=sys.stderr)
@@ -384,6 +395,9 @@ def run_turn(first):
     if mark(ms, "ratelimit"):
         rl = ev("rate_limit")
         rl["rate_limit_info"]["status"] = mark(ms, "ratelimit")
+        if mark(ms, "ratelimit") == "rejected":
+            # A limit in force resets in the future, as the real event's resetsAt does.
+            rl["rate_limit_info"]["resetsAt"] = int(time.time()) + 3600
         emit(rl)
     else:
         emit(ev("rate_limit"))
@@ -393,6 +407,8 @@ def run_turn(first):
         if mark(ms, "ratelimit_late"):
             rl = ev("rate_limit")
             rl["rate_limit_info"]["status"] = mark(ms, "ratelimit_late")
+            if mark(ms, "ratelimit_late") == "rejected":
+                rl["rate_limit_info"]["resetsAt"] = int(time.time()) + 3600
             emit(rl)
         if mark(ms, "retry"):
             for i in range(int(mark(ms, "retry"))):

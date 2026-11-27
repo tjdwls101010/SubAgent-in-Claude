@@ -8,11 +8,11 @@ import shutil
 from pathlib import Path
 
 from delegate.claude_cli import PARENT_IDENTITY
-from delegate.codex_cli import ISOLATION_FLOOR_TEXT, apply_preamble, build_argv, changed_paths, check_model_effort, codex_home, codex_support, config_summary, event_lines, first_thread_id, login_status, model_catalog, read_only_blocker, refuse_without_isolation, scan_progress, stderr_tail
+from delegate.codex_cli import ISOLATION_FLOOR_TEXT, apply_preamble, ask_app_server, is_usage_limit, limit_resets_at, read_rollouts, build_argv, changed_paths, check_model_effort, codex_home, codex_support, config_summary, event_lines, first_thread_id, login_status, model_catalog, read_only_blocker, refuse_without_isolation, scan_progress, stderr_tail
 from delegate.errors import Refusal
 from delegate.git import add_detached, toplevel
 from delegate.registry import TERMINAL, registry_args, update_meta, worker_alive
-from delegate.util import clip, invocation, nfc, now
+from delegate.util import clip, invocation, iso, nfc, now
 
 NAME = "codex"
 # Whether a run can ask for the priority service tier (`--priority`).
@@ -272,6 +272,11 @@ class Driver:
             tail = stderr_tail(Path(self.run_dir) / "stderr.log")
             error = message or (f"codex exited {returncode}" + (f": {tail.splitlines()[-1][:300]}" if tail else ""))
             fields.update({"state": "failed", "error": error})
+            if is_usage_limit(message):
+                # The account's limit, not the work: when it resets, from what Codex said, else from its rollouts.
+                obs = read_rollouts() or {}
+                resets = limit_resets_at(message) or max((w["resets_at"] for w in obs.get("windows") or [] if (w.get("used_percent") or 0) >= 100 and w.get("resets_at")), default=None)
+                fields.update({"state": "quota_exhausted", "resets_at": resets})
         # Without the notice Codex always prints, so the supervisor does not record raw stderr in its place.
         fields["stderr_tail"] = tail[-600:] if (tail := stderr_tail(Path(self.run_dir) / "stderr.log")) else None
         return fields
@@ -355,6 +360,48 @@ def log_lines(v):
     return list(v["lines"])
 
 
+# -- models and limits ----------------------------------------------------------
+
+
+def quota_view(obs, source, observed_at, at=None):
+    """A limits reading as the skill reports it: `state` (ok, exhausted or unknown), `scope`, `windows` (each `kind`, `used_percent`, `resets_at`), `resets_at` when exhausted, `observed_at`, `source`. A window whose reset has passed says nothing about now and is left out."""
+    at = at or now()
+    if not obs:
+        return {"state": "unknown", "scope": None, "windows": [], "observed_at": None, "source": None, "why": "neither `codex app-server` nor a rollout of this CODEX_HOME said"}
+    windows = [w for w in obs.get("windows") or [] if not w.get("resets_at") or w["resets_at"] > at]
+    full = [w for w in windows if (w.get("used_percent") or 0) >= 100]
+    exhausted = bool(full) or obs.get("allowed") is False
+    out = {"state": "exhausted" if exhausted else ("ok" if windows or obs.get("allowed") else "unknown"), "scope": f"ordinary usage (limit {obs.get('limit_id')})", "windows": windows, "observed_at": observed_at, "source": source, "plan": obs.get("plan")}
+    if exhausted:
+        resets = [w["resets_at"] for w in (full or windows) if w.get("resets_at")]
+        out["resets_at"] = max(resets) if full else (min(resets) if resets else None)
+    return out
+
+
+_QUOTA = {}
+
+
+def quota(model=None, runs_dir=None):
+    """The account's limits now: asked of `codex app-server`, else the newest rollout of this CODEX_HOME. The limit is the account's ordinary usage, which every catalog model observed so far draws on."""
+    pin_codex_home()
+    if "now" not in _QUOTA:
+        obs = ask_app_server()
+        if obs is not None:
+            _QUOTA["now"] = quota_view(obs, "app-server", now())
+        else:
+            obs = read_rollouts()
+            _QUOTA["now"] = quota_view(obs, "rollout", (obs or {}).get("observed_at"))
+    return _QUOTA["now"]
+
+
+def models():
+    """This install's catalog — slug, description, efforts, default effort, context window, visibility — or why it could not be read."""
+    pin_codex_home()
+    catalog = model_catalog()
+    keep = ("slug", "display_name", "description", "efforts", "default_effort", "context_window", "visibility")
+    return {"models": [{k: m.get(k) for k in keep} for m in catalog] if catalog else None, "source": "codex debug models" if catalog else None, "error": None if catalog else "the catalog could not be read (`codex debug models`)"}
+
+
 # -- doctor -----------------------------------------------------------------
 
 
@@ -381,5 +428,12 @@ def diagnose(cwd):
             blockers.append("codex is not logged in; run `codex login` in a terminal")
     elif login["ok"] is None:
         warnings.append(f"login could not be checked: {login['detail']}")
-    report = {"path": path, "installed": True, "version": support["version"], "isolation": support["isolation"], "read_only_scratch": not blocker, "login": login, "codex_home": str(codex_home()), "codex_home_from_env": bool(os.environ.get("CODEX_HOME")), "config": config_summary()}
+    limits = quota()
+    if limits["state"] == "exhausted":
+        warnings.append(f"the account's codex limit is used up until {iso(limits.get('resets_at'))}; codex runs are refused until then")
+    else:
+        for w in limits["windows"]:
+            if (w.get("used_percent") or 0) >= 90:
+                warnings.append(f"codex {w['kind']} limit at {w['used_percent']:g}% (resets {iso(w.get('resets_at'))}); every codex worker draws on it")
+    report = {"path": path, "installed": True, "quota": limits, "version": support["version"], "isolation": support["isolation"], "read_only_scratch": not blocker, "login": login, "codex_home": str(codex_home()), "codex_home_from_env": bool(os.environ.get("CODEX_HOME")), "config": config_summary()}
     return {"report": report, "blockers": blockers, "warnings": warnings}

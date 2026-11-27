@@ -7,7 +7,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support.harness import engine
+import os
+
+from support.harness import FAKE_CODEX_DIR, FAKE_DIR, engine
+
+
+def setUpModule():
+    # In process, a model alias is checked against the claude on PATH (and cached): the fake's captured list, never the developer's own install.
+    os.environ["PATH"] = f"{FAKE_DIR}{os.pathsep}{FAKE_CODEX_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
+
 
 claude = engine("delegate.engine").adapter("claude")
 Refusal = engine("delegate.errors").Refusal
@@ -18,20 +26,20 @@ NONE = {"profile": None, "model": None, "effort": None, "schema": None}
 class Settings(unittest.TestCase):
     def test_a_new_run_names_its_model_and_effort(self):
         for missing in ("model", "effort"):
-            flags = {**NONE, "model": "m", "effort": "high", missing: None}
+            flags = {**NONE, "model": "claude-m", "effort": "high", missing: None}
             with self.assertRaises(Refusal) as e:
                 claude.settings(flags)
             self.assertTrue(e.exception.arguments)
             self.assertIn(f"--{missing} is required", e.exception.message)
 
     def test_profile_defaults_to_write(self):
-        s = claude.settings({**NONE, "model": "m", "effort": "high"})
-        self.assertEqual((s["engine"], s["profile"], s["model"], s["effort"], s["schema_text"]), ("claude", "write", "m", "high", None))
+        s = claude.settings({**NONE, "model": "claude-m", "effort": "high"})
+        self.assertEqual((s["engine"], s["profile"], s["model"], s["effort"], s["schema_text"]), ("claude", "write", "claude-m", "high", None))
         self.assertEqual(s["changed"], {})
 
     def test_an_effort_claude_does_not_take_is_refused(self):
         with self.assertRaises(Refusal) as e:
-            claude.settings({**NONE, "model": "m", "effort": "extreme"})
+            claude.settings({**NONE, "model": "claude-m", "effort": "extreme"})
         self.assertTrue(e.exception.arguments)
         self.assertEqual(e.exception.fields["valid_efforts"], ["low", "medium", "high", "xhigh", "max"])
 
@@ -54,7 +62,7 @@ class Settings(unittest.TestCase):
     def test_schema_file(self):
         d = Path(tempfile.mkdtemp())
         (d / "s.json").write_text('{ "type" : "object" }')
-        base = {**NONE, "model": "m", "effort": "high"}
+        base = {**NONE, "model": "claude-m", "effort": "high"}
         self.assertEqual(json.loads(claude.settings({**base, "schema": str(d / "s.json")})["schema_text"]), {"type": "object"})
         (d / "bad.json").write_text("not json")
         for path in (d / "bad.json", d / "missing.json"):

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from delegate.engine import adapter
-from delegate.registry import TERMINAL, find_run, resolve_runs_dir
-from delegate.util import now
+from pathlib import Path
+
+from delegate.engine import ENGINES, adapter
+from delegate.registry import TERMINAL, find_run, registry_args, resolve_runs_dir
+from delegate.util import invocation, iso, now
 
 from .rows import attention, last_event_at, load
 
@@ -28,6 +30,12 @@ def snapshot_of(run_dir, attention_override=None):
     }
     if v["unparsed"]:
         header["unparsed_events"] = v["unparsed"]
+    if meta.get("state") == "quota_exhausted":
+        # The account's limit ended the turn; the other engine can take it over in the same directory.
+        other = next((n for n in ENGINES if n != meta.get("engine")), None)
+        header["resets_at"] = iso(meta.get("resets_at"))
+        header["instead"] = invocation("start", "--engine", other, "--model", "<model>", "--effort", "<effort>", "--cwd", meta.get("cwd"), "<prompt>", *registry_args(str(Path(run_dir).parent)))
+        header["why"] = f"the {meta.get('engine')} limit is used up; {other} draws on another account's limits — another model family, which matters when this was to be an independent check. Tell the new worker where this one stopped (its last message is above) and that any change it left is an unverified draft"
     if live:
         header["note"] = "the answer is in, but the worker is still running something" if v["decided"] else "the run is live: this is its latest message, not its answer"
     elif v.get("writing"):

@@ -11,7 +11,7 @@ import unittest
 from support.harness import ENTRY, SKILL_DIR, Sandbox
 
 SKILL_MD = SKILL_DIR / "SKILL.md"
-COMMANDS = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "doctor")
+COMMANDS = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "models", "doctor")
 
 
 def frontmatter():

@@ -19,6 +19,7 @@ through the environment so the bridge cannot tell it from the real CLI:
   FAKE_CODEX_IGNORE_SIGINT  sit through SIGINT so a signal ladder has to escalate
   FAKE_CODEX_IGNORE_SIGTERM  sit through SIGTERM too
   FAKE_CODEX_GRANDCHILD  start a child in codex's process group that ignores SIGINT (and SIGTERM when codex does); it writes its own pid to this path once its handlers are installed
+  FAKE_CODEX_RATE_LIMITS  what `app-server` answers to `account/rateLimits/read`: a file holding the answer, "!fail" to exit at once; unset, limits to spare
   FAKE_CODEX_WHEN       JSON object: for each key the prompt contains, its object of FAKE_CODEX_* settings applies to this run, so batch members can differ
 """
 
@@ -113,6 +114,20 @@ def main():
             print("not json at all")
             return 0
         print(raw if raw else json.dumps(CATALOG))
+        return 0
+
+    if argv[:1] == ["app-server"]:
+        # One JSON-RPC session: `initialize`, then `account/rateLimits/read` answered from FAKE_CODEX_RATE_LIMITS (a file holding the captured answer; "!fail" exits at once, unset answers with limits to spare).
+        raw = os.environ.get("FAKE_CODEX_RATE_LIMITS")
+        if raw == "!fail":
+            return 1
+        answer = json.loads(open(raw).read()) if raw else {"id": 2, "result": {"ordinaryUsageAllowed": True, "rateLimits": {"limitId": "codex", "primary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": int(time.time()) + 3600}, "secondary": {"usedPercent": 30, "windowDurationMins": 10080, "resetsAt": int(time.time()) + 86400}, "planType": "plus", "rateLimitReachedType": None}}}
+        for line in sys.stdin:
+            msg = json.loads(line)
+            if msg.get("id") == 1:
+                print(json.dumps({"id": 1, "result": {"codexHome": os.environ.get("CODEX_HOME")}}), flush=True)
+            elif msg.get("method") == "account/rateLimits/read":
+                print(json.dumps({**answer, "id": msg["id"]}), flush=True)
         return 0
 
     log = os.environ.get("FAKE_CODEX_ARGV_LOG")

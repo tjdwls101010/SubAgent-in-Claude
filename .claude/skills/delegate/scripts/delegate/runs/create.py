@@ -8,11 +8,11 @@ import sys
 import time
 from pathlib import Path
 
-from delegate.engine import adapter, inside_worker
+from delegate.engine import ENGINES, adapter, inside_worker
 from delegate.errors import Refusal
 from delegate.git import toplevel
 from delegate.registry import TERMINAL, is_live, live_runs, publish_run, read_meta, record_if_active, registry_args, unreadable_runs, update_meta
-from delegate.util import entry_path, invocation, now, timings
+from delegate.util import entry_path, invocation, iso, now, timings
 
 WRITERS = ("write", "full")
 
@@ -42,6 +42,24 @@ def refuse_live(engine, runs_dir, native_id):
             raise Refusal(f"cannot tell whether {native_id} is free: these runs on it have a meta.json that does not parse; repair or remove them", unreadable_runs=blind)
 
     return check
+
+
+def other_engine(name):
+    return next((n for n in ENGINES if n != name), None)
+
+
+def handover(engine_name, cwd, runs_dir):
+    """The start that hands the work to the other engine in the same directory: its model, effort and the brief are the caller's to fill in."""
+    other = other_engine(engine_name)
+    return {"instead": invocation("start", "--engine", other, "--model", "<model>", "--effort", "<effort>", "--cwd", cwd, "<prompt>", *registry_args(runs_dir)), "why": f"the {other} engine draws on another account's limits; it is another model family, which matters when this was to be an independent check"}
+
+
+def refuse_exhausted(engine, settings, runs_dir, cwd):
+    """Refuse a run on an engine whose account limit a fresh reading shows used up until a time still to come; anything less certain — no reading, an old one, another scope — lets the run start."""
+    q = engine.quota(settings.get("model"), runs_dir)
+    resets = q.get("resets_at")
+    if q.get("state") == "exhausted" and resets and resets > now():
+        raise Refusal("quota_exhausted", detail=f"the {engine.NAME} limit ({q.get('scope')}) is used up until {iso(resets)}", engine=engine.NAME, resets_at=iso(resets), observed_at=iso(q.get("observed_at")), source=q.get("source"), **handover(engine.NAME, cwd, runs_dir))
 
 
 def default_cwd(cwd):
@@ -80,11 +98,13 @@ def concurrent_writers(runs_dir, cwd, run_id):
     return out
 
 
-def create_run(*, runs_dir, engine_name, kind, prompt, settings, cwd, native_id=None, label=None, timeout=None, previous=None, group=None, worktree=None, expect_cwd=None, launch_cwd=None, group_info=None, worktree_info=None, extra_meta=None, precheck=None, on_published=None, origin=None):
-    """Publish and start one run. `kind` is `start` (a new session or thread) or `resume` (`native_id` given). `origin` says what started it when that was not a caller in a conversation (a schedule's job), and is in the meta from the moment the run is published. Returns the run's meta after the start wait."""
+def create_run(*, runs_dir, engine_name, kind, prompt, settings, cwd, native_id=None, label=None, timeout=None, previous=None, group=None, worktree=None, expect_cwd=None, launch_cwd=None, group_info=None, worktree_info=None, extra_meta=None, precheck=None, on_published=None, origin=None, preflight=True):
+    """Publish and start one run. `kind` is `start` (a new session or thread) or `resume` (`native_id` given). `origin` says what started it when that was not a caller in a conversation (a schedule's job), and is in the meta from the moment the run is published. `preflight` refuses a run whose engine's limit is known to be used up (a schedule's job skips it, and lets the run fail on its own). Returns the run's meta after the start wait."""
     refuse_inside_worker()
     engine = adapter(engine_name)
     engine.check_installed()
+    if preflight:
+        refuse_exhausted(engine, settings, runs_dir, cwd)
     if kind == "start":
         native_id = engine.new_native_id()
     launch_cwd = launch_cwd or cwd
