@@ -27,7 +27,9 @@ def ts(day, hour, minute=0):
 T0 = ts(17, 5, 47)
 
 
-class Move(Scheduling):
+class MoveWorld(Scheduling):
+    """A repository with four schedules of the claude skill — recurring, upcoming, finished, held — their old records, and the steps run as the job runs them."""
+
     def legacy_text(self, name, *, cron=None, at=None, profile="full", definition="d0d0d0d0"):
         spec = {"name": name, "cron": cron, "at": at, "timezone": TZ, "profile": profile, "model": "sonnet", "effort": "high", "timeout": 3600, "worktree": False, "runs_on": ["self-hosted"], "project": str(self.project), "cli": "/Users/someone/.claude/skills/claude/scripts/cli.py", "definition": definition, "prompt": f"work for {name}\n", "schema": None}
         text = github.render_workflow(spec)
@@ -78,6 +80,8 @@ class Move(Scheduling):
             out[step] = self.job(step, now=now)
         return out
 
+
+class Move(MoveWorld):
     def test_the_inventory_classifies_and_writes_nothing(self):
         inv = self.job("inventory")
         by = {r["name"]: r for r in inv["schedules"]}
@@ -122,7 +126,8 @@ class Move(Scheduling):
         out = self.job("freeze", expect=3)
         waiting = {r["name"]: r for r in out["results"]}["nightly"]
         self.assertEqual(waiting["status"], "waiting")
-        self.assertEqual(self.job("state", expect=0)["results"][0]["status"], "done", "a later step does not wait for the freeze; the journal does")
+        state = {r["name"]: r["status"] for r in self.job("state", expect=3)["results"]}
+        self.assertEqual(state["nightly"], "waiting", "an old run still queued could fill a slot the copy would miss")
         w = self.world()
         w["runs"][0]["status"] = "completed"
         self.world(w)
@@ -176,3 +181,70 @@ class Move(Scheduling):
         self.assertEqual((run.returncode, finish.returncode), (0, 0), run.stdout + finish.stdout)
         self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", (d / "summary").read_text())
         self.assertIsNone(self.plist(NEW_PREFIX + "later"))
+
+
+class MoveSafety(MoveWorld):
+    """What a move must not do halfway (PR⑧ claude review): lose schedules to a second inventory, strand a one-off whose time passes while frozen, forget a commit it made, resume before it published, or report a rollback done that is not."""
+
+    def test_a_second_inventory_is_refused_while_a_move_is_under_way(self):
+        self.job("inventory")
+        self.through("freeze", "state")
+        refused = self.job("inventory", expect=1)
+        self.assertEqual(refused["moving"], ["done", "later", "nightly"])
+
+    def test_a_one_off_whose_time_passes_while_frozen_is_still_moved_and_run(self):
+        self.job("inventory")
+        self.through("freeze", "state")
+        past = int(datetime(2026, 12, 1, 7, 0, tzinfo=ZoneInfo(TZ)).timestamp())
+        self.job("publish", now=past)
+        self.job("resume", now=past)
+        dispatched = [c["argv"] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "later.yml"]]
+        self.assertEqual([[a for a in c if a.startswith("slot=")] for c in dispatched], [[f"slot={int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())}"]])
+
+    def test_a_commit_made_before_the_journal_was_written_is_recognised(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        j = json.loads((self.runs_dir() / ".migration" / "journal.json").read_text())
+        del j["schedules"]["nightly"]["published"]  # as if the job stopped right after its commit
+        (self.runs_dir() / ".migration" / "journal.json").write_text(json.dumps(j))
+        puts = len([c for c in self.gh_calls() if "PUT" in c["argv"] and "contents" in " ".join(c["argv"])])
+        self.assertEqual({r["name"]: r["status"] for r in self.job("publish")["results"]}["nightly"], "done")
+        self.assertEqual(len([c for c in self.gh_calls() if "PUT" in c["argv"] and "contents" in " ".join(c["argv"])]), puts)
+        self.job("rollback", "--only", "nightly")
+        self.assertTrue(self.committed("nightly").startswith(LEGACY_HEADER), "the rollback still has the old text")
+
+    def test_resume_before_publish_is_refused_and_touches_nothing(self):
+        self.job("inventory")
+        self.through("freeze", "state")
+        out = self.job("resume", expect=1)
+        moved = [r for r in out["results"] if r["name"] in ("later", "nightly")]
+        self.assertTrue(moved and all(r["status"] == "failed" and "publish" in r["error"] for r in moved), out)
+        self.assertEqual(self.repo()["workflows"]["nightly.yml"], "disabled_manually")
+        self.assertIsNone(self.plist(NEW_PREFIX + "nightly"))
+
+    def test_a_rollback_after_a_resume_that_stopped_halfway_removes_the_new_dispatcher(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        self.world(fail_dispatch=True)
+        self.job("resume", now=T0 + 86400, expect=1)
+        self.assertTrue(self.plist(NEW_PREFIX + "nightly"), "installed before the dispatch failed")
+        self.world(fail_dispatch=False)
+        self.job("rollback", "--only", "nightly", now=T0 + 86400)
+        self.assertIsNone(self.plist(NEW_PREFIX + "nightly"))
+        self.assertTrue(self.plist(OLD_PREFIX + "nightly"))
+
+    def test_a_rollback_whose_dispatcher_did_not_load_is_not_done(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        self.env["FAKE_LAUNCHCTL_FAIL"] = "bootstrap"
+        out = self.job("rollback", "--only", "nightly", now=T0 + 3 * 86400, expect=3)
+        self.assertEqual(out["results"][0]["status"], "waiting")
+        del self.env["FAKE_LAUNCHCTL_FAIL"]
+        note = self.job("rollback", "--only", "nightly", now=T0 + 3 * 86400)["results"][0]["note"]
+        self.assertEqual(note["missed_slots"], [str(ts(18, 3)), str(ts(19, 3)), str(ts(20, 3))], "slots the old skill cannot fill as themselves are reported")
+
+    def test_verify_fails_while_a_move_is_halfway(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        check = self.job("verify", expect=1)
+        self.assertTrue(any("nightly: the move stopped" in p for p in check["problems"]), check["problems"])

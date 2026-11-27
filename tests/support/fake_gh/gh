@@ -7,6 +7,7 @@ world.json: {"auth": "ok" | "none" | "noscope", "repos": {"owner/name": {"privat
   race: the next n Contents PUTs first lose to another `schedule` call, which commits the file as it was (or, for a first create, what this call sends) under another definition id — and with `race_cron`, another cron — and get the 409 a real loser got (stage 0 f).
   protected: a Contents PUT or DELETE gets the 409 a protected branch answered (captured).
   offline: a Contents PUT fails as gh does without a network: a message on stderr, no HTTP status.
+  fail_dispatch: `gh workflow run` fails as GitHub answering 500 does.
   slow: every call first sleeps this many seconds.
   A repository may carry "pulls": [{"number", "head" (a commit sha), "base" (default: the default branch), "base_repo", "state" (open or closed), "merged"}] — what `commits/<sha>/pulls` answers, each in the shape of the captured `commit-pulls-open` or `commit-pulls-merged` — and "unknown_commits": shas GitHub answers 422 "No commit found" for (captured).
   A repository may carry "git": the path of a bare git repository standing in for GitHub's copy. A Contents PUT or DELETE then also commits the change there, with the request's message, and answers with that commit's sha, so a checkout whose origin is that repository can fetch what the API committed.
@@ -132,6 +133,9 @@ if args[:2] == ["workflow", "run"]:
     if file not in states:
         f = fixture("dispatch-404")
         sys.stderr.write(f["stderr"].replace("claude-none.yml", file))
+        sys.exit(1)
+    if world.get("fail_dispatch"):
+        print("could not create workflow dispatch event: HTTP 500: Server Error", file=sys.stderr)
         sys.exit(1)
     if states[file] != "active":
         print(f"could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow (https://api.github.com/repos/{canonical}/actions/workflows/1/dispatches)", file=sys.stderr)

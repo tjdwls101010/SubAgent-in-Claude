@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 
 from delegate.github import delete_workflow, dispatch_workflow, gh_path, parse_spec, read_workflow, render_workflow, set_workflow_enabled, unfinished_runs, workflow_state, write_workflow
-from delegate.launchd import agents_dir, calendar_entries, install_agent, load_agent, remove_agent
+from delegate.launchd import agent_state, agents_dir, calendar_entries, install_agent, load_agent, remove_agent
 from delegate.registry import schedule_lock, schedule_state, take_over_legacy_state, write_definition
 from delegate.schedule import dispatcher_argv, dispatcher_label, dispatcher_log, fields_of, fire_times, legacy_dispatcher_label, merge
 
@@ -54,6 +54,11 @@ def _move_plist_out(label, backup):
 def freeze(j: Journal, row, ctx):
     """3-3: the old dispatcher moved out of launchd, the workflow disabled, then wait until GitHub has no run of it queued or running and the old registry no live worker of it."""
     name, s = row["name"], j.of(row["name"])
+    if s.get("rolled_back"):
+        # Moved back earlier: the move starts over.
+        j.data["schedules"][name] = {}
+        j.save()
+        s = {}
     if not s.get("plist_moved"):
         label = legacy_dispatcher_label(ctx["repo"], name)
         _move_plist_out(label, j.backup / f"{label}.plist")
@@ -69,48 +74,62 @@ def freeze(j: Journal, row, ctx):
 
 
 def move_state(j: Journal, row, ctx):
-    """3-4: the old state.json, as it stands after the queue drained, taken over as this skill's record — slots and jobs, each old job marked legacy with how its run ended, so a retry decision about an old slot still has an answer — with the definition kept, and the old record left as it was for a rollback."""
+    """3-4: the old state.json, once the queue has drained, taken over as this skill's record — slots and jobs, each old job marked legacy with how its run ended, so a retry decision about an old slot still has an answer — with the workflow's definition, and the old record left as it was for a rollback. Before the queue drains, an old run could still fill a slot the copy would not hold."""
     name = row["name"]
     if j.of(name).get("state_moved"):
         return
+    if not j.of(name).get("drained"):
+        raise NotYet(f"{name}: its queue has not drained (freeze); its old record could still change")
     with schedule_lock(ctx["registry"], name):
-        if not take_over_legacy_state(ctx["registry"], name, str(Path(ctx["project"]) / OLD_REGISTRY), keep_definition=True):
-            # A schedule that never ran has no old record: its definition is the workflow's.
-            write_definition(ctx["registry"], name, row["definition"])
+        take_over_legacy_state(ctx["registry"], name, str(Path(ctx["project"]) / OLD_REGISTRY), keep_definition=True)
+        # The definition is the one the workflow's jobs carry, whatever the old record held.
+        write_definition(ctx["registry"], name, row["definition"])
     j.update(name, state_moved=True)
 
 
-def new_spec(row, ctx):
-    """The spec the move publishes: the old one as it is — definition included — under this skill's command, in the same file and the old concurrency group."""
-    text = (read_workflow(ctx["repo"], row["file"], ctx["branch"]) or {}).get("text")
+def new_spec(row, ctx, text=None, frozen_at=None):
+    """The spec the move publishes: the old one as it is — definition included — under this skill's command, in the same file and the old concurrency group. A one-off is judged as of the freeze: its time may pass while it is frozen, and resume then dispatches that slot."""
+    if text is None:
+        text = (read_workflow(ctx["repo"], row["file"], ctx["branch"]) or {}).get("text")
     recorded = parse_spec(text)
-    spec = merge({"name": row["name"]}, recorded, timezone=recorded["timezone"], project=ctx["project"], cli=ctx["cli"], now=ctx["now"], keep_definition=True)
+    when = min(ctx["now"], frozen_at or ctx["now"])
+    spec = merge({"name": row["name"]}, recorded, timezone=recorded["timezone"], project=ctx["project"], cli=ctx["cli"], now=when, keep_definition=True)
     return {**spec, "file": row["file"], "concurrency": f"claude-{row['name']}"}
 
 
 def publish(j: Journal, row, ctx):
-    """3-5: a moved schedule's workflow rewritten whole by this skill's renderer in one commit against the file the inventory read; a finished one-off's workflow deleted. The definition published is checked against the state just written."""
+    """3-5: a moved schedule's workflow rewritten whole by this skill's renderer in one commit against the file the inventory read; a finished one-off's workflow deleted, also only as the inventory read it. What a rollback needs is journaled before the commit, and a commit already made is recognised when the step runs again."""
     name, s = row["name"], j.of(row["name"])
     if s.get("published"):
         return
+    if not s.get("state_moved"):
+        raise RuntimeError(f"{name}: run the state step first")
+    current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
     if row["class"] == "finished":
-        current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
+        if current is not None and current.get("sha") != row["sha"]:
+            raise RuntimeError(f"{name}: .github/workflows/{row['file']} changed since the inventory (sha {row['sha']}); find out what changed it before deleting it")
         if current is not None:
+            j.update(name, pending={"old_text": current["text"], "old_sha": current["sha"]})
             done = delete_workflow(ctx["repo"], row["file"], f"Remove finished one-off {name} (moved to delegate)", ctx["branch"], current["sha"])
             j.update(name, published={"deleted": True, "commit": done["commit"], "old_text": current["text"]})
         else:
-            j.update(name, published={"deleted": True, "commit": None})
+            j.update(name, published={"deleted": True, "commit": None, "old_text": (s.get("pending") or {}).get("old_text")})
         return
-    current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
-    if current is None or current.get("sha") != row["sha"]:
-        raise RuntimeError(f"{name}: .github/workflows/{row['file']} changed since the inventory (sha {row['sha']}); take the inventory again")
-    spec = new_spec(row, ctx)
+    pending = s.get("pending")
+    old_text = (pending or {}).get("old_text") or (current or {}).get("text")
+    spec = new_spec(row, ctx, text=old_text, frozen_at=s.get("frozen_at"))
     text = render_workflow(spec)
-    done = write_workflow(ctx["repo"], row["file"], text, f"Move schedule {name} to the delegate skill", ctx["branch"], sha=current["sha"])
-    back = parse_spec((read_workflow(ctx["repo"], row["file"], ctx["branch"]) or {}).get("text"))
     stored = (schedule_state(ctx["registry"], name) or {}).get("definition")
-    if not back or back.get("definition") != stored:
-        raise RuntimeError(f"{name}: the published definition {(back or {}).get('definition')} is not the state's {stored}")
+    if spec["definition"] != stored:
+        raise RuntimeError(f"{name}: the definition to publish {spec['definition']} is not the state's {stored}; nothing was committed")
+    if pending and current is not None and current.get("text") == text:
+        # The commit was made by an earlier run that stopped before journaling it.
+        j.update(name, published={"commit": None, "old_text": pending["old_text"], "old_sha": pending["old_sha"]}, spec=spec)
+        return
+    if current is None or current.get("sha") != row["sha"]:
+        raise RuntimeError(f"{name}: .github/workflows/{row['file']} changed since the inventory (sha {row['sha']}) and is not what this step writes; find out what changed it — `rollback` restores the old text")
+    j.update(name, pending={"old_text": current["text"], "old_sha": current["sha"]})
+    done = write_workflow(ctx["repo"], row["file"], text, f"Move schedule {name} to the delegate skill", ctx["branch"], sha=current["sha"])
     j.update(name, published={"commit": done["commit"], "old_text": current["text"], "old_sha": current["sha"]}, spec=spec)
 
 
@@ -143,12 +162,20 @@ def missed_slots(spec, since, now):
         t = nxt[-1]
 
 
+def filled_slots(row, ctx):
+    """The slots either side filled: this skill's record and the old one as it is now."""
+    return set((schedule_state(ctx["registry"], row["name"]) or {}).get("slots") or {}) | set((old_state(ctx["project"], row["name"]) or {}).get("slots") or {})
+
+
 def resume(j: Journal, row, ctx):
-    """3-6: the workflow put back in its expected state — confirmed on GitHub — and only then this skill's dispatcher installed; the slots that passed while it was frozen and that nobody filled dispatched with their own slot, through the same claim as any trigger."""
+    """3-6: once the workflow is published under this skill, it is put back in its expected state — confirmed on GitHub — and only then this skill's dispatcher installed; the slots that passed while it was frozen and that neither side filled are dispatched with their own slot, through the same claim as any trigger."""
     name, s = row["name"], j.of(row["name"])
     if row["class"] == "finished" or s.get("resumed"):
         return
-    spec = s.get("spec") or new_spec(row, ctx)
+    missing = [step for step, key in (("freeze", "drained"), ("state", "state_moved"), ("publish", "published")) if not s.get(key)]
+    if missing:
+        raise RuntimeError(f"{name}: run {', '.join(missing)} first; resuming before would start the old command under the new dispatcher")
+    spec = s.get("spec") or new_spec(row, ctx, frozen_at=s.get("frozen_at"))
     want = expected(row, ctx)
     if want == "active":
         set_workflow_enabled(ctx["repo"], row["file"], True)
@@ -158,29 +185,30 @@ def resume(j: Journal, row, ctx):
         got = install_agent(label, dispatcher_argv(gh_path(), ctx["repo"], row["file"], ctx["branch"]), calendar_entries(fields_of(spec)), dispatcher_log(ctx["repo"], name))
         if got["status"] != "installed":
             raise NotYet(f"{name}: the dispatcher was not installed: {got.get('error')}")
-        filled = set((schedule_state(ctx["registry"], name) or {}).get("slots") or {})
-        recovered = []
+        j.update(name, new_dispatcher=True)
+        filled = filled_slots(row, ctx)
         for slot in missed_slots(spec, s.get("frozen_at") or ctx["now"], ctx["now"]):
-            if str(int(slot)) not in filled and str(int(slot)) not in (s.get("recovered") or []):
-                dispatch_workflow(ctx["repo"], row["file"], ctx["branch"], {"source": "dispatcher", "slot": str(int(slot))})
-                recovered.append(str(int(slot)))
-        j.update(name, resumed=True, resumed_state=want, recovered=(s.get("recovered") or []) + recovered)
+            key = str(int(slot))
+            if key not in filled and key not in (j.of(name).get("recovered") or []):
+                dispatch_workflow(ctx["repo"], row["file"], ctx["branch"], {"source": "dispatcher", "slot": key})
+                j.update(name, recovered=(j.of(name).get("recovered") or []) + [key])
+        j.update(name, resumed=True, resumed_state=want)
     else:
         set_workflow_enabled(ctx["repo"], row["file"], False)
-        j.update(name, resumed=True, resumed_state=want, recovered=s.get("recovered") or [])
+        j.update(name, resumed=True, resumed_state=want)
 
 
 def rollback(j: Journal, row, ctx):
-    """Back to the `claude` skill for one schedule: the new side frozen and drained first, whatever slot it filled written into the old state, the old file restored by a commit, the workflow put in its expected state, and the old dispatcher put back. A slot missed meanwhile that the old skill cannot fill (it takes no slot) is reported."""
+    """Back to the `claude` skill for one schedule: the new side frozen and drained first, whatever slot it filled written into the old state, the old file restored by a commit, the workflow put in its expected state, and the old dispatcher put back and loaded. The slots that passed since the freeze and that neither side filled are reported: the old skill takes no slot, so they cannot be dispatched as themselves. Afterwards the schedule's journal starts over, so the move can be made again."""
     name, s = row["name"], j.of(row["name"])
     if s.get("rolled_back"):
         return {}
-    if s.get("resumed") and not s.get("new_frozen"):
-        label = dispatcher_label(ctx["repo"], name)
+    # Whatever of this skill's dispatcher exists goes, also after a resume that stopped halfway.
+    label = dispatcher_label(ctx["repo"], name)
+    if agent_state(label) != "missing":
         _move_plist_out(label, j.backup / f"{label}.plist")
+    if s.get("published") or s.get("pending") or s.get("new_dispatcher"):
         set_workflow_enabled(ctx["repo"], row["file"], False)
-        j.update(name, new_frozen=True)
-    if s.get("resumed"):
         pending = unfinished_runs(ctx["repo"], row["file"])
         if pending:
             raise NotYet(f"{name}: {len(pending)} run(s) of its workflow are not finished; run the rollback again once they end")
@@ -198,16 +226,32 @@ def rollback(j: Journal, row, ctx):
             tmp.write_text(json.dumps(old))
             os.replace(tmp, old_path)
             note["slots_moved_back"] = sorted(fresh)
-    published = s.get("published") or {}
-    if published.get("old_text"):
+    old_text = (s.get("published") or {}).get("old_text") or (s.get("pending") or {}).get("old_text")
+    if old_text:
         current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
-        write_workflow(ctx["repo"], row["file"], published["old_text"], f"Move schedule {name} back to the claude skill", ctx["branch"], sha=(current or {}).get("sha"))
+        if (current or {}).get("text") != old_text:
+            write_workflow(ctx["repo"], row["file"], old_text, f"Move schedule {name} back to the claude skill", ctx["branch"], sha=(current or {}).get("sha"))
     want = expected(row, ctx)
     set_workflow_enabled(ctx["repo"], row["file"], want == "active")
     backup = Path(s.get("plist_backup") or "")
     if want == "active" and backup.is_file():
-        label = legacy_dispatcher_label(ctx["repo"], name)
-        shutil.copy2(backup, agents_dir() / f"{label}.plist")
-        load_agent(label)
-    j.update(name, rolled_back=True, rollback_note=note)
+        old_label = legacy_dispatcher_label(ctx["repo"], name)
+        shutil.copy2(backup, agents_dir() / f"{old_label}.plist")
+        loaded = load_agent(old_label)
+        if loaded["status"] != "loaded":
+            raise NotYet(f"{name}: the old dispatcher is back in place but launchd did not load it: {loaded.get('error')}; run the rollback again")
+    if s.get("frozen_at"):
+        spec = s.get("spec")
+        if spec is None:
+            try:
+                spec = new_spec(row, ctx, text=old_text, frozen_at=s["frozen_at"])
+            except Exception:  # a spec that cannot be rebuilt only costs the note
+                spec = None
+        if spec:
+            filled = filled_slots(row, ctx)
+            missed = [str(int(t)) for t in missed_slots(spec, s["frozen_at"], ctx["now"]) if str(int(t)) not in filled]
+            if missed:
+                note["missed_slots"] = missed
+    j.data["schedules"][name] = {"rolled_back": True, "rolled_back_at": ctx["now"], "rollback_note": note}
+    j.save()
     return note
