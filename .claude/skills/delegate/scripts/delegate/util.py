@@ -22,11 +22,12 @@ TIMINGS = {
     "finishing_attention": 120.0,  # a process alive this long after stdin closed is attention
     "poll": 0.2,
     "doctor_gh_wait": 20.0,  # how long doctor waits for gh's answers about scheduling before it reports them missing
-    # Test seams, 0 in production: pauses at the three points a stop can land in while a run starts — after the run is published, before the supervisor launches the worker, and between launching it and recording its pid — and in `stop` between reading the run and marking it stopped.
+    # Test seams, 0 in production: pauses at the three points a stop can land in while a run starts — after the run is published, before the supervisor launches the worker, and between launching it and recording its pid — in `stop` between reading the run and marking it stopped, and in `resume` between reading the settings and publishing.
     "pause_after_publish": 0.0,
     "pause_before_launch": 0.0,
     "pause_before_pid": 0.0,
     "pause_before_stop_mark": 0.0,
+    "pause_before_resume_publish": 0.0,  # in `resume`, between reading the session's settings and publishing the new run
 }
 
 

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from delegate.registry import TERMINAL, read_meta, record_if_active, update_meta
-from delegate.util import now, pid_alive, timings
+from delegate.util import group_alive, now, pid_alive, timings
 
 # The variables that tell a command it runs inside a worker. DELEGATE_RUN is this skill's; CLAUDE_SKILL_RUN is the marker of the `claude` skill this one replaces, set too while that skill can still be installed, so a worker cannot start workers through it either. The `codex` skill it replaces has no such marker.
 MARKER = "DELEGATE_RUN"
@@ -37,7 +37,7 @@ def log(run_dir, text):
 
 
 def signal_ladder(pgid, pid, *, grace=None, kill_grace=None, on_signal=None):
-    """Interrupt a process group: SIGINT, then SIGTERM after `grace`, then SIGKILL after `kill_grace`, stopping as soon as `pid` is gone. SIGINT first lets the engine end its turn and keep the session or thread resumable. Returns the signals sent."""
+    """Interrupt a process group: SIGINT, then SIGTERM after `grace`, then SIGKILL after `kill_grace`, stopping as soon as `pid` is gone; then, when something of the group outlived `pid` (a tool's child that ignores SIGINT), SIGKILL to what is left after `kill_grace`, so nothing of the run keeps working once it is recorded stopped. SIGINT first lets the engine end its turn and keep the session or thread resumable. Returns the signals sent."""
     t = timings()
     grace = t["stop_grace"] if grace is None else grace
     kill_grace = t["kill_grace"] if kill_grace is None else kill_grace
@@ -57,6 +57,16 @@ def signal_ladder(pgid, pid, *, grace=None, kill_grace=None, on_signal=None):
         end = time.time() + wait
         while time.time() < end and pid_alive(pid, pgid):
             time.sleep(0.05)
+    if sent and sent[-1] != "SIGKILL" and group_alive(pgid):
+        # The group id stays reserved while any member lives, so what answers here is still this run's.
+        end = time.time() + kill_grace
+        while time.time() < end and group_alive(pgid):
+            time.sleep(0.05)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            sent.append("SIGKILL")
+        except (ProcessLookupError, PermissionError):
+            pass
     return sent
 
 
@@ -131,36 +141,46 @@ def supervise(run_dir, adapter):
     os.close(gate_read)
     time.sleep(t["pause_before_pid"])
 
-    def record_pid(m):
+    def record_pid_and_open(m):
+        # One transition under the run's lock: the pid is recorded and the gate opened only when no stop has been asked for, so a stop lands either before (the engine never runs) or after (it signals a running engine), never in between.
         m.update({"worker_pid": proc.pid, "worker_pgid": proc.pid, "started_at": now()})
         if m.get("stop_requested"):
             record_stopped(m)
+            return
+        try:
+            os.write(gate_write, b"go\n")
+        except OSError as e:
+            log(run_dir, f"could not open the gate: {e}")
 
-    recorded = update_meta(run_dir, record_pid)
+    recorded = update_meta(run_dir, record_pid_and_open)
+    os.close(gate_write)
     if recorded.get("state") in TERMINAL:
-        # Closing the gate unopened makes the shell exit without ever running the engine.
-        os.close(gate_write)
+        # The gate closed unopened makes the shell exit without ever running the engine.
         proc.wait()
         stderr_file.close()
         log(run_dir, "stopped before the worker ran")
         return 0
-    try:
-        os.write(gate_write, b"go\n")
-    except OSError as e:
-        log(run_dir, f"could not open the gate: {e}")
-    os.close(gate_write)
     log(run_dir, f"{adapter.NAME} pid {proc.pid}: {' '.join(meta['argv'][:3])} …")
     driver = adapter.driver(run_dir, meta, proc)
     pump = Pump(proc, Path(run_dir) / "events.jsonl", driver)
     driver.bind(pump)
     deadline = (now() + float(meta["settings"]["timeout"])) if meta["settings"].get("timeout") else None
+    ending = None
     while proc.poll() is None:
         driver.tick()
-        if deadline and now() >= deadline:
-            log(run_dir, "deadline passed")
-            update_meta(run_dir, lambda m: m.update({"timed_out_at": now()}))
-            signal_ladder(proc.pid, proc.pid)
-            deadline = None
+        if ending is None:
+            if deadline and now() >= deadline:
+                log(run_dir, "deadline passed")
+                update_meta(run_dir, lambda m: m.update({"timed_out_at": now()}))
+                ending = "deadline"
+            else:
+                asked = read_meta(run_dir).get("stop_requested")
+                # `stop` signals the group itself when it can tell the process is this run's. The supervisor, which owns the child, is the fallback: if the worker outlives the time `stop`'s own ladder takes, it ends it.
+                if asked and now() - asked >= t["stop_grace"] + t["kill_grace"] + 1:
+                    log(run_dir, "stop requested and the worker still runs")
+                    ending = "stop"
+            if ending:
+                threading.Thread(target=signal_ladder, args=(proc.pid, proc.pid), daemon=True).start()
         time.sleep(t["poll"])
     pump.thread.join(timeout=10)
     returncode = proc.returncode
