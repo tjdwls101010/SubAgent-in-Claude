@@ -19,10 +19,11 @@ import os
 import sys
 from pathlib import Path
 
+from delegate.batch import TASK_FIELDS, batch, clean
 from delegate.doctor import doctor
 from delegate.engine import ENGINES, PROFILES, supervise
 from delegate.errors import Refusal
-from delegate.observe import LISTING_ROWS, STALL_SECONDS, log, result, status
+from delegate.observe import GROUP_MESSAGE_CAP, LISTING_ROWS, STALL_SECONDS, log, result, status
 from delegate.runs import refuse_inside_worker, resume, start, stop
 
 EXIT_REFUSED, EXIT_ARGUMENTS, EXIT_BLOCKED = 1, 2, 3
@@ -48,7 +49,7 @@ PRIORITY_HELP = "codex only: request service_tier \"priority\" (Fast mode), reco
 
 RUN_EPILOG = """\
 Answers once the engine confirms the start (codex: `thread.started`, with its thread id; claude: its first init), or after 15 s with `state: starting` and a `note`, so a start the engine never took — not logged in, a bad flag, an engine too old — says so here; a turn that fails after the engine took it is `result`'s to report. A detached supervisor drives the run, so it outlives this command and nothing announces its end: run the reply's `next.command` in the background; it returns when the run ends or needs attention, and prints the result.
-A codex worker is isolated: Codex does not load your config.toml, so no MCP servers, plugins, agent roles or hooks, and the run's model and effort are only what you name. A claude worker inherits your whole Claude Code environment — CLAUDE.md files, skills, hooks, plugins, MCP servers, memory — under the profile's restrictions, with background tasks off so its turn ending is the answer (a tool still running after it is shown as `finishing` until the process exits), and without the tools that start or message other agents. Every worker is told nobody can answer it, that its final message is what you receive, to leave git commits, branches, pushes and merges to you unless the prompt asks, and that it cannot start workers: inside a worker this skill refuses to start, stop or resume runs."""
+A codex worker is isolated: Codex does not load your config.toml, so no MCP servers, plugins, agent roles or hooks, and the run's model and effort are only what you name. A claude worker inherits your whole Claude Code environment — CLAUDE.md files, skills, hooks, plugins, MCP servers, memory — under the profile's restrictions, with background tasks off so its turn ending is the answer (a tool still running after it is shown as `finishing` until the process exits), and without the tools that start or message other agents. Every worker is told nobody can answer it, that its final message is what you receive, to leave git commits, branches, pushes and merges to you unless the prompt asks, and that it cannot start workers: inside a worker this skill refuses to start, stop, resume or clean runs."""
 
 START_DESC = """\
 Start a fresh worker on PROMPT, detached.
@@ -61,10 +62,25 @@ For a session the registry never saw, give --engine, --profile, --cwd (the direc
 Prints: one JSON line as `start` prints, plus `profile_changed_from` when --profile changed it, and `note` for a session the registry never saw.
 Exits: 0 started; 1 refused or failed — the session has a live run (`instead` says what to do), run from inside a worker, the engine missing or too old, a run with no native id, or the run failed before the engine confirmed it (a session the engine does not know fails here); 2 the command line must change — no REF, no prompt or an empty one, an --engine other than the one the run recorded (`instead` gives the two commands that hand the work over), an unknown REF without --engine, a session or thread the registry never saw without --profile, --cwd, (codex) --model and --effort or (claude) --effort, a model or effort the engine does not take, or anything else the parser refuses."""
 
+BATCH_DESC = """\
+Start several runs as one named group, of one engine or of both: each --task, then each --tasks-file line, is a member started as `start` (or `resume`) would start it, with the group's flags as its defaults and a task's own fields over them. The group is one name for `status`, `result` and `stop` with --group, and for `clean`; each of its slots is the run that slot started. It outlives the session that started it, and its name stays reserved until `clean` releases it. N workers spend their engine's subscription limits N times over.
+Prints: one JSON line — `group`, `spawned`, `requested`, `next` (the `result --group <name> --wait` call to run in the background, absent when nothing started), `runs` (per member its `index`, `label`, `engine`, `run_id`, `native_id`, `state`, `cwd`, `worktree`, `profile`, `model`, `effort` and the engine's own start fields, or the `error` that kept it from starting), and `worktrees` with `missing_ignored` when members got checkouts of their own, or `shared_tree` when several writers share one directory.
+Exits: 0 every member's start was tried, even when some failed (they carry `error`); 1 refused before anything started — the name is reserved, a checkout of that name is left from an earlier group, run from inside a worker; 2 the command line must change — a --group that breaks the naming rule, no task, a tasks file that cannot be read or a line that is not a valid task (an unknown field, a value outside its set, kind `resume` without `resume`), a new member without an engine, model or effort or with one its engine does not take, --profile full as the group's default, or anything else the parser refuses."""
+
+BATCH_EPILOG = f"""\
+Tasks file: one JSON object per line with the fields {', '.join(TASK_FIELDS)} (`priority` true or false; blank lines and lines starting with # are skipped). `kind` is `start` (default) or `resume`; a resume line names the run, session or thread in `resume` — a next round is a batch of resume lines, one per member, after every member has ended. A new member names its engine, model and effort, in its line or through the batch's flags; --profile full is never a group default — a task that may write anywhere (codex without a sandbox) says so in its own line.
+--worktree: a fresh member gets a checkout of its own when its profile can write, it has no cwd of its own, the batch gives none, and the repository has a commit. A claude member's is Claude Code's `--worktree <group>-<index>`, at .claude/worktrees/<group>-<index> on branch worktree-<group>-<index>, with what .worktreeinclude names copied in; a codex member's is a detached checkout at .delegate-runs/<run>/wt, cut when the run is published. Each starts from your local HEAD: none of your uncommitted changes, nothing git ignores but those copies (`missing_ignored` lists what is absent). Moving changes back into your tree is yours to do; `clean` removes the checkouts afterwards. A resumed member stays in the directory its session or thread ran in.
+Each member is told its group's name and size, and a member with a checkout where it is, which commit it came from and how many uncommitted files your tree has."""
+
+CLEAN_DESC = """\
+Remove a group's checkouts and release its name once nothing of it is left. A checkout is removed only when that loses nothing: no change to a tracked file, every untracked or ignored entry a .worktreeinclude copy or a file a claude member's startup created that is unchanged since, and no commit on a detached HEAD that no branch holds. A claude member's branch is deleted when it has no commits beyond the base, and never otherwise. Live work is never removed, --force or not: a checkout any live run of any engine works in — in this group or not — stays, and so does a member whose record cannot be read. Each removal is made under the lock every run is published under, so no run starts in a checkout while it goes. Runs recorded in another registry (another --runs-dir) are not seen.
+Prints: one JSON line — `group`, `removed` (per checkout its `index`, `engine`, `path`, `branch`, and `branch_deleted` or `branch_kept`), `kept` (per checkout the `reason`, the paths that would be lost, `occupied_by` with the `stop` call when a live run works there), `name_released`, `forced`, and `note` when the name stays reserved.
+Exits: 0 cleaned as far as it could (`name_released` says whether all of it); 1 refused — no such group, a live member (`instead` stops the group), the batch still starting its members, or run from inside a worker; 2 the command line must change — no --group."""
+
 STATUS_DESC = f"""\
-What the registry knows: every live run plus the {LISTING_ROWS} newest, or one run in full.
-Prints: one JSON line. With no selector: `registry`, `live` (run ids), `runs` (a short row each: `run_id`, `engine`, `native_id`, `state`, `label`, `group`, `profile`, `model`, `idle_seconds`, `error`, `attention`, `last_message`), `runs_truncated`. With --run: that run's full row — the above plus `stored_state`, `kind`, `effort`, `cwd`, `worktree`, `created`, `ended`, `elapsed_seconds`, `exit_code`, `in_progress` (calls without a result yet), `files_changed`, `usage`, `unparsed_events`, `stderr_tail` (claude: for a failure; codex: whenever its stderr held more than the notice Codex always prints), `still_writing` when the worker outlived its supervisor, `events`, and the engine's own — codex: `sandbox`, `read_only`, `read_only_note`, `isolated`, `service_tier`, `turns_completed`, `commands`, `turn_failed`; claude: `permission_mode`, `mode_mismatch`, `tasks_open`, `permission_denials`, `tool_calls`, `messages`, `unanswered`, `undelivered`, `stdin_open`, `retrying_since`, `rate_limit`, `cost_usd`, `profile_exceptions`.
-Exits: 0 answered; 1 refused — no such run, an ambiguous prefix, or a meta.json that does not parse."""
+What the registry knows: every live run plus the {LISTING_ROWS} newest, one run in full, or one group.
+Prints: one JSON line. With no selector: `registry`, `live` (run ids), `runs` (a short row each: `run_id`, `engine`, `native_id`, `state`, `label`, `group`, `profile`, `model`, `idle_seconds`, `error`, `attention`, `last_message`), `runs_truncated`, `groups` (each with its `group_state`, `members` and `engines`), and the newest `rate_limit` a claude run observed. With --group: `group`, `generation`, `group_state`, `running`, `done`, `failed`, `unstarted`, and each member's full row. With --run: that run's full row — the above plus `stored_state`, `kind`, `effort`, `cwd`, `worktree`, `created`, `ended`, `elapsed_seconds`, `exit_code`, `in_progress` (calls without a result yet), `files_changed`, `usage`, `unparsed_events`, `stderr_tail` (claude: for a failure; codex: whenever its stderr held more than the notice Codex always prints), `still_writing` when the worker outlived its supervisor, `events`, and the engine's own — codex: `sandbox`, `read_only`, `read_only_note`, `isolated`, `service_tier`, `turns_completed`, `commands`, `turn_failed`; claude: `permission_mode`, `mode_mismatch`, `tasks_open`, `permission_denials`, `tool_calls`, `messages`, `unanswered`, `undelivered`, `stdin_open`, `retrying_since`, `rate_limit`, `cost_usd`, `profile_exceptions`.
+Exits: 0 answered; 1 refused — no such run or group, an ambiguous prefix, or a meta.json or manifest that does not parse; 2 the command line must change — --run with --group."""
 
 STATUS_EPILOG = f"""\
 States:
@@ -78,6 +94,7 @@ States:
   interrupted  ended: stopped
   timed_out    ended: its --timeout passed
   orphaned     ended: its supervisor died without recording an outcome; `still_writing` says the worker is still running
+A group's `group_state` is `running` while any member is live, `completed` when every member completed, and `partial` otherwise — a failure, a stop, a timeout or a member that never started.
 `attention` lists what needs a look now: `stalled`; claude also `retrying` for 120 s, `rate_limited` (a rejected rate limit), `finishing` for 120 s, `possibly_blocked`."""
 
 LOG_DESC = """\
@@ -85,25 +102,26 @@ What one run did, read from its events.
 Prints: text, one line per event that matters, in the engine's own terms — codex: `thread <id>`, `turn.started`, `cmd exit=<n> out=<bytes>B <command>` with the head and tail of the output indented beneath a failure, `cmd.running <command>` while one runs, `msg <text>` whole, `file <kind> <path>`, `search <query>`, `mcp <server>/<tool> status=<s>`, `error <message>`, `turn.completed in=… cached=… out=… reasoning=…`, `turn.failed <error>`; claude: `init model=… mode=… cwd=…` (again when either changes), `msg <text>` with the whole message, `bash exit=<n> out=<bytes>B <command>` with the head and tail of the output indented beneath a failure, `edit|write|read <path>`, `grep|glob <pattern>`, `fetch <url>`, `search <query>`, `skill <name>`, `agent <type> <description> tools=<n> out=<bytes>B`, `mcp <server>/<tool> ok|error`, `denied <tool> <input>`, `sent <priority> <message>`, `task <status> <description>`, `retry attempt=<a>/<max> error=<kind> status=<http>`, `ratelimit <status> 5h=<%> 7d=<%>` when the status changes, `compact`, `result <subtype> turns=<n> terminal=<reason> cost=$<x>` (with `origin=task-notification` for a background follow-up), `running <tool> <summary>` for calls still without a result — then `run=<id> state=<state>`.
 Exits: 0 printed; 1 refused — no such run; 2 the command line must change — no --run."""
 
-RESULT_DESC = """\
-What a run concluded: at once (partial while live), or with --wait once it ends or needs attention.
-Prints: a JSON header line — `run_id`, `engine`, `native_id`, `state`, `exit_code`, `error`, `attention`, `files_changed`, `usage`, the engine's own fields — codex: `turn_failed`, `commands`, `sandbox`, `read_only`, `isolated`, `parse_error` when a --schema run's final message is not JSON; claude: `answered` (the messages the answer replies to), `unanswered`, `last_message_unanswered`, `answer_unconfirmed` (claude did not say which message it answered), `blocked_by_hook`, `last_message_blocked`, `possibly_blocked`, `permission_denials`, `files_changed_note`, `tool_calls`, `cost_usd`, `followups` (background follow-up turns, not the answer), `mode_mismatch`, `profile_exceptions` — then `message_bytes`, and `note` and `next` while the run is live; then the final message. A --schema run prints one indented JSON document instead, whose `json` is the structured output (null while starting or running; null with `message` holding the final text when the run ended without one). Once a claude run is `finishing` its answer is decided: the text and `json` are the answer, and `note` says claude is still running something.
-Exits: 0 printed, whatever the run's state, also when --wait-timeout passes; 1 refused — no such run; 2 the command line must change — no --run, --wait-timeout without --wait or not positive."""
+RESULT_DESC = f"""\
+What a run or a group concluded: at once (partial while live), or with --wait once it ends or needs attention.
+Prints: a JSON header line — `run_id`, `engine`, `native_id`, `state`, `exit_code`, `error`, `attention`, `files_changed`, `usage`, the engine's own fields — codex: `turn_failed`, `commands`, `sandbox`, `read_only`, `isolated`, `parse_error` when a --schema run's final message is not JSON; claude: `answered` (the messages the answer replies to), `unanswered`, `last_message_unanswered`, `answer_unconfirmed` (claude did not say which message it answered), `blocked_by_hook`, `last_message_blocked`, `possibly_blocked`, `permission_denials`, `files_changed_note`, `tool_calls`, `cost_usd`, `followups` (background follow-up turns, not the answer), `mode_mismatch`, `profile_exceptions` — then `message_bytes`, and `note` and `next` while the run is live; then the final message. A --schema run prints one indented JSON document instead, whose `json` is the structured output (null while starting or running; null with `message` holding the final text when the run ended without one). Once a claude run is `finishing` its answer is decided: the text and `json` are the answer, and `note` says claude is still running something. For a group: a JSON header — `group`, `generation`, `group_state`, `overlaps` (paths, relative to each member's checkout, that more than one member changed, with their indexes), `totals`, `attention` (members that need a look), `members` (each one's `engine`, `run_id`, `state`, `bytes`, `shown_bytes`, counts) and `next` while live — then per member a `--- [<index>:<label>] engine=<engine> run=<id> state=<state> bytes=<n>` line and its message cut to {GROUP_MESSAGE_CAP} B.
+Exits: 0 printed, whatever the run's state, also when --wait-timeout passes; 1 refused — no such run or group; 2 the command line must change — neither or both of --run and --group, --wait-timeout without --wait or not positive."""
 
 RESULT_EPILOG = f"""\
---wait returns when the run ends, or early when attention appears that was not there when it began: no event for {STALL_SECONDS} s (`stalled`), and for claude API retries for 120 s (`retrying`), a rejected rate limit (`rate_limited`), claude still running 120 s after the answer (`finishing`), or a turn that ended with no reply and no hook notice (`possibly_blocked`). The header's `attention` says which, with what the run was doing; its `next` waits again for something new. Nothing is stopped for it.
+--wait on a group returns when every member has ended or any member has new attention; it waits on the members the group had when the wait began. --wait returns when the run ends, or early when attention appears that was not there when it began: no event for {STALL_SECONDS} s (`stalled`), and for claude API retries for 120 s (`retrying`), a rejected rate limit (`rate_limited`), claude still running 120 s after the answer (`finishing`), or a turn that ended with no reply and no hook notice (`possibly_blocked`). The header's `attention` says which, with what the run was doing; its `next` waits again for something new. Nothing is stopped for it.
 `files_changed` lists the paths the engine's events say it changed (codex: its file_change events, relative to the run's directory; claude: Edit, Write and NotebookEdit calls); files a shell command wrote are not in it.
 A codex run's final message is the file Codex wrote at the end (`-o`); without one (a run stopped or failed before it), or while it runs, the latest agent message.
 A codex run's `stderr_tail` (in `status`) is its stderr without the notice Codex always prints, on any turn that left something there."""
 
 STOP_DESC = """\
 Stop runs through their recorded process groups, never by name: SIGINT, then SIGTERM after 10 s, then SIGKILL 3 s later; what of the group outlives the engine gets SIGTERM, then SIGKILL. SIGINT first lets the engine end the turn so the session or thread can be resumed. A run that has ended keeps its outcome, and what it left running in its process group (a server a turn started) is ended.
+With --group, the run each slot of the group started.
 Prints: one JSON line — `stopped`, an entry per run with `run_id`, `engine`, `native_id`, `signals_sent` and `state` (`interrupted` for a run that was live; one that had ended keeps its state, with `note`).
-Exits: 0 every run was tried; 1 refused — run from inside a worker, or no such run; 2 the command line must change — no --run."""
+Exits: 0 every run was tried; 1 refused — run from inside a worker, or no such run or group; 2 the command line must change — neither or both of --run and --group."""
 
 DOCTOR_DESC = """\
 The environment a run would start in, checked without starting a worker: Python; per engine its CLI on PATH and version against the floor the skill needs, login, what its sandboxed profiles need on this platform, and settings in your files that widen them; and the registry with its live runs.
-Prints: one JSON line — `ok`, `blockers`, `warnings` (each prefixed with its engine), `python`, `engines` (per engine `ok`, `blockers`, `warnings` and its report — codex: `path`, `installed`, `version`, `isolation`, `read_only_scratch`, `login` (`ok`, `cause`, `detail`), `codex_home`, `codex_home_from_env`, `config` (`path`, `sandbox_mode`, `approval_policy` — which runs do not read); claude: `path`, `version`, `floor`, `verified`, `auth` (`loggedIn`, `authMethod`, `subscriptionType`, `apiProvider`), `sandbox` (`platform`, `supported`, `missing`), `profile_exceptions` per profile), `skill_dir`, `entry`, `invocation` (the command form the pre-approval matches), `registry` (`path`, `exists`, `writable`, `live_runs`).
+Prints: one JSON line — `ok`, `blockers`, `warnings` (each prefixed with its engine), `python`, `engines` (per engine `ok`, `blockers`, `warnings` and its report — codex: `path`, `installed`, `version`, `isolation`, `read_only_scratch`, `login` (`ok`, `cause`, `detail`), `codex_home`, `codex_home_from_env`, `config` (`path`, `sandbox_mode`, `approval_policy` — which runs do not read); claude: `path`, `version`, `floor`, `verified`, `auth` (`loggedIn`, `authMethod`, `subscriptionType`, `apiProvider`), `sandbox` (`platform`, `supported`, `missing`), `profile_exceptions` per profile), `skill_dir`, `entry`, `invocation` (the command form the pre-approval matches), `registry` (`path`, `exists`, `writable`, `live_runs`, `groups`, `worktrees` — every checkout a group made that git still records, with the `group` it belongs to).
 Exits: 0 no blocker; 3 a blocker would stop every run of an engine checked — its CLI too old or not logged in, Python below 3.11, a registry that cannot be written; an engine whose CLI is not installed is a blocker only when --engine names it, and a warning otherwise (its own `ok` stays false), but no engine installed at all is a blocker; 2 an argument the parser refuses."""
 
 
@@ -127,7 +145,7 @@ class OneLinePerParagraph(argparse.HelpFormatter):
         return super()._format_action(action)
 
 
-VISIBLE = ("start", "resume", "status", "log", "result", "stop", "doctor")
+VISIBLE = ("start", "resume", "batch", "status", "log", "result", "stop", "clean", "doctor")
 
 
 class ArgumentError(Exception):
@@ -192,22 +210,48 @@ def build_parser():
     p.add_argument("--cwd", metavar="DIR", help="the directory to resume in (default: where it last ran); required for a session the registry never saw")
     add_registry(p)
 
-    p = sub.add_parser("status", usage="cli.py status [--run REF]", help="list runs, or show one run", description=STATUS_DESC, epilog=STATUS_EPILOG, formatter_class=OneLinePerParagraph)
-    p.add_argument("--run", metavar="REF", help="a run id, a native id, or a unique prefix of either")
+    p = sub.add_parser("batch", usage="cli.py batch --group NAME (--task PROMPT … | --tasks-file FILE) [--engine E --model M --effort E] [--worktree] [--profile P] [options]", help="start several runs, of one engine or both, as one named group", description=BATCH_DESC, epilog=BATCH_EPILOG, formatter_class=OneLinePerParagraph)
+    p.add_argument("--group", metavar="NAME", required=True, help="the group's name: lowercase letters, digits and hyphens, at most 40; reserved until `clean`")
+    p.add_argument("--task", metavar="PROMPT", action="append", help="a member's prompt; repeat for several")
+    p.add_argument("--tasks-file", metavar="FILE", help="members as JSON lines (see below), after the --task ones")
+    p.add_argument("--worktree", action="store_true", help="give each fresh writing member a checkout of its own (see below)")
+    p.add_argument("--engine", choices=tuple(ENGINES), help="the members' default engine (see start --help)")
+    p.add_argument("--model", help="the members' default model (see start --help)")
+    p.add_argument("--effort", help="the members' default effort (see start --help)")
+    p.add_argument("--profile", choices=("read-only", "write"), help="the members' default profile, read-only or write (see start --help); full is given per task")
+    p.add_argument("--schema", metavar="FILE", help="the members' default JSON Schema file")
+    p.add_argument("--priority", action="store_true", help="codex members' default: request service_tier \"priority\"")
+    p.add_argument("--timeout", type=positive, metavar="SEC", help="stop each member after SEC seconds")
+    p.add_argument("--cwd", metavar="DIR", help="the members' default working directory (members with a cwd get no checkout of their own)")
+    add_registry(p)
+
+    p = sub.add_parser("status", usage="cli.py status [--run REF | --group NAME]", help="list runs, or show one run or group", description=STATUS_DESC, epilog=STATUS_EPILOG, formatter_class=OneLinePerParagraph)
+    sel = p.add_mutually_exclusive_group()
+    sel.add_argument("--run", metavar="REF", help="a run id, a native id, or a unique prefix of either")
+    sel.add_argument("--group", metavar="NAME", help="a group's name")
     add_registry(p)
 
     p = sub.add_parser("log", usage="cli.py log --run REF", help="what one run did, as text", description=LOG_DESC, formatter_class=OneLinePerParagraph)
     p.add_argument("--run", metavar="REF", required=True, help="a run id, a native id, or a unique prefix of either")
     add_registry(p)
 
-    p = sub.add_parser("result", usage="cli.py result --run REF [--wait [--wait-timeout SEC]]", help="what a run concluded, now or once it ends", description=RESULT_DESC, epilog=RESULT_EPILOG, formatter_class=OneLinePerParagraph)
-    p.add_argument("--run", metavar="REF", required=True, help="a run id, a native id, or a unique prefix of either")
+    p = sub.add_parser("result", usage="cli.py result (--run REF | --group NAME) [--wait [--wait-timeout SEC]]", help="what a run or group concluded, now or once it ends", description=RESULT_DESC, epilog=RESULT_EPILOG, formatter_class=OneLinePerParagraph)
+    sel = p.add_mutually_exclusive_group(required=True)
+    sel.add_argument("--run", metavar="REF", help="a run id, a native id, or a unique prefix of either")
+    sel.add_argument("--group", metavar="NAME", help="a group's name")
     p.add_argument("--wait", action="store_true", help="block until the run ends or new attention appears")
     p.add_argument("--wait-timeout", type=positive, metavar="SEC", help="with --wait, give up after SEC seconds and print the partial result")
     add_registry(p)
 
-    p = sub.add_parser("stop", usage="cli.py stop --run REF [--run REF …]", help="interrupt runs", description=STOP_DESC, formatter_class=OneLinePerParagraph)
-    p.add_argument("--run", metavar="REF", action="append", required=True, help="a run to stop; repeat for several")
+    p = sub.add_parser("stop", usage="cli.py stop (--run REF [--run REF …] | --group NAME)", help="interrupt runs", description=STOP_DESC, formatter_class=OneLinePerParagraph)
+    sel = p.add_mutually_exclusive_group(required=True)
+    sel.add_argument("--run", metavar="REF", action="append", help="a run to stop; repeat for several")
+    sel.add_argument("--group", metavar="NAME", help="stop the run each slot of this group started")
+    add_registry(p)
+
+    p = sub.add_parser("clean", usage="cli.py clean --group NAME [--force]", help="remove a group's checkouts and release its name", description=CLEAN_DESC, formatter_class=OneLinePerParagraph)
+    p.add_argument("--group", metavar="NAME", required=True, help="the group to clean")
+    p.add_argument("--force", action="store_true", help="also remove checkouts holding uncommitted, untracked or ignored work, discarding it; live work, unreadable members, commits no branch holds and branches with commits are still kept")
     add_registry(p)
 
     p = sub.add_parser("doctor", usage="cli.py doctor [--engine E] [--project DIR]", help="check the environment a run would start in", description=DOCTOR_DESC, formatter_class=OneLinePerParagraph)
@@ -265,7 +309,7 @@ def emit(obj):
 
 def dispatch(args):
     c = args.command
-    if c in ("start", "resume", "stop"):
+    if c in ("start", "resume", "batch", "stop", "clean"):
         # Before reading a prompt or the registry: inside a worker these commands are refused whatever their arguments.
         refuse_inside_worker()
     if c == "start":
@@ -280,8 +324,17 @@ def dispatch(args):
         reply = resume(ref=args.ref, engine=args.engine, prompt=read_text(args.prompt, args.prompt_file, "resume"), cwd=base_dir(args), flags=flags, label=args.label, timeout=args.timeout, runs_dir=args.runs_dir)
         emit(reply)
         return EXIT_REFUSED if reply.get("error") else 0
+    if c == "batch":
+        defaults = {"engine": args.engine, "profile": args.profile, "model": args.model, "effort": args.effort, "schema": args.schema, "priority": args.priority, "timeout": args.timeout, "cwd": run_flags(args)["cwd"]}
+        if args.schema and not Path(args.schema).expanduser().is_file():
+            raise Refusal(f"--schema {args.schema} is not a file", arguments=True, help="batch --help")
+        emit(batch(name=args.group, task_args=args.task, tasks_file=args.tasks_file, defaults=defaults, cwd=base_dir(args), use_worktrees=args.worktree, runs_dir=args.runs_dir))
+        return 0
+    if c == "clean":
+        emit(clean(name=args.group, cwd=base_dir(args), force=args.force, runs_dir=args.runs_dir))
+        return 0
     if c == "status":
-        emit(status(cwd=base_dir(args), ref=args.run, runs_dir=args.runs_dir))
+        emit(status(cwd=base_dir(args), ref=args.run, group=args.group, runs_dir=args.runs_dir))
         return 0
     if c == "log":
         sys.stdout.write(log(cwd=base_dir(args), ref=args.run, runs_dir=args.runs_dir))
@@ -289,10 +342,10 @@ def dispatch(args):
     if c == "result":
         if args.wait_timeout and not args.wait:
             raise Refusal("--wait-timeout needs --wait", arguments=True, help="result --help")
-        sys.stdout.write(result(cwd=base_dir(args), ref=args.run, wait_for=args.wait, wait_timeout=args.wait_timeout, runs_dir=args.runs_dir))
+        sys.stdout.write(result(cwd=base_dir(args), ref=args.run, group=args.group, wait_for=args.wait, wait_timeout=args.wait_timeout, runs_dir=args.runs_dir))
         return 0
     if c == "stop":
-        emit(stop(refs=args.run or [], cwd=base_dir(args), runs_dir=args.runs_dir))
+        emit(stop(refs=args.run or [], group=args.group, cwd=base_dir(args), runs_dir=args.runs_dir))
         return 0
     if c == "doctor":
         reply = doctor(cwd=base_dir(args), engine=args.engine, runs_dir=args.runs_dir)

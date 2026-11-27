@@ -372,3 +372,34 @@ def _preserve(worktree, ref, main, artifacts):
             return {"kept_because": f"{ref} and the next 98 names after it are taken"}
         except RuntimeError as e:
             return {"kept_because": f"git refused to keep them: {e}"}
+
+
+def add_detached(repo, path, base):
+    """Cut a detached checkout of `base` at `path`: tracked files at that commit and nothing else. (ok, error)."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    code, out, err = run_git(repo, "worktree", "add", "--detach", str(path), base, timeout=300)
+    return (True, None) if code == 0 else (False, (err or out).strip()[:400])
+
+
+def remove_unfinished(repo, path):
+    """Remove a checkout `git worktree add` never finished — no .git file, or still under the `initializing` lock that command holds for the whole add — which `git worktree remove` refuses to validate. Judged on git's own record of `path`; a finished checkout, or one git does not record, is never deleted by hand. (ok, error)."""
+    path = Path(path)
+    code, out, _ = run_git(repo, "worktree", "list", "--porcelain")
+    if code != 0:
+        return False, "git could not list the worktrees"
+    here = os.path.realpath(path)
+    unfinished = not (path / ".git").exists()
+    if not unfinished:
+        for record in out.split("\n\n"):
+            lines = record.splitlines()
+            if lines and lines[0].startswith("worktree ") and os.path.realpath(lines[0][len("worktree "):]) == here:
+                # 성진: a git that translates its messages writes the lock reason in its own language; the checkout is then kept, the safe side. Match the translations too if that is ever seen.
+                unfinished = "locked initializing" in lines
+    if not unfinished:
+        return False, "not a checkout git left unfinished"
+    run_git(repo, "worktree", "unlock", str(path))
+    shutil.rmtree(path, ignore_errors=True)
+    run_git(repo, "worktree", "prune")
+    code, out, _ = run_git(repo, "worktree", "list", "--porcelain")
+    still = [os.path.realpath(l[len("worktree "):]) for l in out.splitlines() if l.startswith("worktree ")]
+    return (True, None) if not path.exists() and here not in still else (False, "it is still there")

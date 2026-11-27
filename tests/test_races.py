@@ -12,7 +12,7 @@ import shutil
 import unittest
 from pathlib import Path
 
-from support.harness import SCRIPTS, Sandbox
+from support.harness import CLAUDE_RUN, SCRIPTS, Sandbox
 
 CLAIM = r"""
 import json, sys, time
@@ -104,14 +104,13 @@ class CliRaces(Sandbox):
             self.assertEqual(sorted(m["uuid"] for m in call["messages"][1:]), sorted(a["message_uuid"] for a in accepted))
         self.assertGreater(accepted_total, 0, "no send reached a live run: the burst raced nothing")
 
-    @unittest.skip("batch comes with PR ③")
     def test_two_batches_with_one_name(self):
         import threading
 
         out = []
 
         def go(i):
-            out.append(self.cli("batch", "--group", "same", "--task", f"t{i}", timeout=120))
+            out.append(self.cli("batch", *CLAUDE_RUN, "--group", "same", "--task", f"t{i}", timeout=120))
 
         threads = [threading.Thread(target=go, args=(i,)) for i in range(2)]
         for t in threads:

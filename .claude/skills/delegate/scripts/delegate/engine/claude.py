@@ -11,9 +11,9 @@ import threading
 import uuid as uuidlib
 from pathlib import Path
 
-from delegate.claude_cli import EFFORTS, PROFILES, VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
+from delegate.claude_cli import EFFORTS, PROFILES, worktree_location, VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
-from delegate.git import main_checkout, startup_snapshot, toplevel
+from delegate.git import branch_exists, main_checkout, startup_snapshot, toplevel
 from delegate.registry import TERMINAL, close, enqueue, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
@@ -112,6 +112,19 @@ def prepare(meta, prompt, *, group_info=None, worktree_info=None, origin=None):
     text = f"{preamble}\n\n{prompt}" if preamble else prompt
     argv = build_argv(s, session_id=meta["native_id"], resume=meta["kind"] == "resume", cwd=meta["cwd"], worktree=(meta.get("worktree") or {}).get("name") if meta["kind"] == "start" else None, schema_text=s.get("schema_text"))
     return argv, text
+
+
+def worktree_plan(repo, name, base, main):
+    """A group member's checkout as Claude Code makes it with `--worktree <name>`: at <repo>/.claude/worktrees/<name> on branch worktree-<name>, from the local HEAD (`worktree.baseRef: head`), with what .worktreeinclude names copied in. Claude Code creates it when the run starts."""
+    where = worktree_location(repo, name)
+    return {"engine": NAME, "name": name, "path": where["path"], "branch": where["branch"], "base": base, "repo": repo, "main": main}
+
+
+def worktree_taken(plan):
+    """Why a planned checkout cannot be made fresh, or None: Claude Code would reopen a leftover of the same name instead of starting clean."""
+    if Path(plan["path"]).exists() or branch_exists(plan["repo"], plan["branch"]):
+        return f"worktree {plan['name']} is still there from an earlier group (path {plan['path']} or branch {plan['branch']}); Claude Code would reopen it instead of starting fresh"
+    return None
 
 
 def extra_meta(cwd, s):

@@ -163,7 +163,14 @@ def publish_run(runs_dir, label, check, make_meta):
         else:
             raise Refusal("could not claim a free run id")
         (run_dir / "inbox").mkdir()
-        meta = make_meta(run_id, str(run_dir))
+        try:
+            meta = make_meta(run_id, str(run_dir))
+        except BaseException:
+            # A run refused while it was being made leaves nothing behind: no directory without a meta.json.
+            import shutil
+
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise
         meta.setdefault("run_id", run_id)
         meta.setdefault("created_at", now())
         meta.setdefault("created", iso(meta["created_at"]))

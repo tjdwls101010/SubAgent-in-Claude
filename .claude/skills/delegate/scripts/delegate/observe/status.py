@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from delegate.registry import find_run, is_live, iter_runs, reap, resolve_runs_dir
 
+from .group import group_status, groups_summary
 from .rows import LISTING_ROWS, listing_row, run_row
 
 
-def status(*, cwd, ref=None, runs_dir=None):
+def status(*, cwd, ref=None, group=None, runs_dir=None):
     registry = resolve_runs_dir(cwd, runs_dir)
     if ref:
         return run_row(find_run(registry, ref))
+    if group:
+        return group_status(registry, group)
     runs = iter_runs(registry)
     live, done = [], []
     for d, _ in runs:
@@ -25,5 +28,6 @@ def status(*, cwd, ref=None, runs_dir=None):
         "live": [r["run_id"] for r in rows if r["run_id"] in live_ids],
         "runs": [listing_row(r) for r in rows],
         "runs_truncated": max(0, len(done) - LISTING_ROWS),
+        "groups": groups_summary(registry),
         "rate_limit": rate[-1] if rate else None,
     }

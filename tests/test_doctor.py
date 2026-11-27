@@ -63,6 +63,19 @@ class Doctor(Sandbox):
         d = self.cli_json("doctor", "--runs-dir", str(f), expect=3, timeout=120)
         self.assertTrue(any("cannot be written" in b for b in d["blockers"]))
 
+    def test_checkouts_are_credited_to_their_own_group(self):
+        from support.harness import CLAUDE_RUN, CODEX_RUN
+
+        for name in ("fix", "fix-db"):
+            reply = self.cli_json("batch", *CLAUDE_RUN, "--group", name, "--worktree", "--task", "x", timeout=120)
+            self.wait_state(reply["runs"][0]["run_id"])
+        reply = self.cli_json("batch", *CODEX_RUN, "--group", "cx", "--worktree", "--task", "x", timeout=120)
+        self.wait_state(reply["runs"][0]["run_id"])
+        d = self.doctor()
+        self.assertEqual(sorted(d["registry"]["groups"]), ["cx", "fix", "fix-db"])
+        got = sorted((w["path"].rsplit("/", 2)[-2] if w["path"].endswith("/wt") else w["path"].rsplit("/", 1)[1], w["group"]) for w in d["registry"]["worktrees"])
+        self.assertEqual(got, sorted([("fix-1", "fix"), ("fix-db-1", "fix-db"), (reply["runs"][0]["run_id"], "cx")]))
+
     def test_registry_live_runs(self):
         live = self.start("x [[fake:sleep:30]]")
         d = self.doctor()
