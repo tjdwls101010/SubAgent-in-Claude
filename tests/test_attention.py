@@ -80,6 +80,35 @@ class MixedGroupWaits(Sandbox):
         self.cli_json("stop", "--group", "cf", timeout=120)
 
 
+class FailuresAroundWaits(MixedGroupWaits):
+    """PR④ claude review: a failure that came before the wait began is still reported, once; a member someone stops is not a failure."""
+
+    def test_a_member_that_failed_before_the_first_wait_is_reported_by_it(self):
+        import time
+
+        f = self.tasks({"prompt": "c [[fake:sleep:20]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
+        self.cli_json("batch", "--group", "early", "--tasks-file", f, timeout=120, env={"FAKE_CODEX_FIXTURE": str(CODEX_FIXTURES / "turn-failed.jsonl"), "FAKE_CODEX_EXIT": "1"})
+        self.wait_for(lambda: self.cli_json("status", "--group", "early")["failed"], what="the codex member to fail")
+        time.sleep(1)  # the caller launches `next` a moment after the batch replied
+        header = self.wait_group("early")
+        self.assertEqual(header["returned_because"], "member_failed")
+        again = self.wait_group("early", "--wait-timeout", "60")
+        self.assertEqual(again["returned_because"], "ended", "reported once")
+
+    def test_stopping_the_group_during_a_wait_is_not_a_failure(self):
+        import subprocess
+        import sys
+
+        from support.harness import ENTRY
+
+        f = self.tasks({"prompt": "a [[fake:sleep:30]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "b [[fake:sleep:30]]", "engine": "claude", "model": "claude-test-model", "effort": "high"})
+        self.cli_json("batch", "--group", "sg", "--tasks-file", f, timeout=120)
+        waiter = subprocess.Popen([sys.executable, str(ENTRY), "result", "--group", "sg", "--wait"], cwd=self.project, env=self.env, stdout=subprocess.PIPE, text=True)
+        self.cli_json("stop", "--group", "sg", timeout=120)
+        out, _ = waiter.communicate(timeout=120)
+        self.assertEqual(json.loads(out.split("\n", 1)[0])["returned_because"], "ended")
+
+
 class Send(Sandbox):
     def test_a_codex_run_takes_no_message_and_says_where_to_go(self):
         out = self.codex("start", "x", env={"FAKE_CODEX_HANG": "60"})

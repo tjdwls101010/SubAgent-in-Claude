@@ -178,6 +178,9 @@ def send_instead(run_id, meta, runs_dir):
                 return {"instead": invocation("send", newest["run_id"], "<message>", *extra), "why": f"run {run_id} has ended, but its session goes on in the live run {newest['run_id']}"}
             return send_instead(newest["run_id"], newest, runs_dir)
         return {"instead": invocation("resume", run_id, "<message>", *extra), "why": "the run has ended; resume continues its session"}
+    if state in ("starting", "running") and supervisor_alive(meta):
+        # Its stdin closed because the answer is in: a stop now could turn that answer into an interruption.
+        return {"instead": invocation("result", "--run", run_id, "--wait", *extra), "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run no longer reads messages: its answer is in or coming"}
     return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run's supervisor is gone or its stdin is closed"}
 
 
