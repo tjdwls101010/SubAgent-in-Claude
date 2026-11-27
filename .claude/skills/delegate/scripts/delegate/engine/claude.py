@@ -40,6 +40,8 @@ def read_schema(path, command):
         text = p.read_text(encoding="utf-8")
     except OSError as e:
         raise Refusal(f"--schema {path}: {e.strerror or e}", arguments=True, help=f"{command} --help")
+    except UnicodeDecodeError as e:
+        raise Refusal(f"--schema {path} is not UTF-8 text: {e}", arguments=True, help=f"{command} --help")
     try:
         obj = json.loads(text)
     except ValueError as e:
@@ -91,6 +93,12 @@ def check_native_id(ref):
         raise Refusal(f"{ref!r} is not a Claude session id (a UUID), so there is no session to resume", arguments=True, help="resume --help")
 
 
+def discover_native_id(run_dir):
+    """The session id a run's events name, for a run whose meta does not say: every stream-json event carries it."""
+    events, _ = read_events(Path(run_dir) / "events.jsonl")
+    return next((e["session_id"] for e in events if e.get("session_id")), None)
+
+
 def unregistered_note():
     return "this session was not in the registry; it now runs under the profile and effort you gave, and on the model the session recorded unless --model changed it"
 
@@ -128,11 +136,11 @@ def reply_fields(meta):
 
 
 def live_instead(run_id, meta, runs_dir):
-    """What to do instead of starting another run on a session that has a live one: send to it while its stdin is open, otherwise stop it first."""
+    """What to do instead of starting another run on a session that has a live one: wait for it to end, or stop it first."""
     extra = registry_args(runs_dir)
-    if meta.get("state") in ("starting", "running") and meta.get("stdin_open") and supervisor_alive(meta):
-        return {"instead": invocation("send", run_id, "<message>", *extra), "why": "the run is live and still reading messages"}
-    return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run is finishing or its supervisor is gone while claude still runs"}
+    if supervisor_alive(meta) and meta.get("state") not in TERMINAL:
+        return {"instead": invocation("result", "--run", run_id, "--wait", *extra), "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run is live; resume once it has ended"}
+    return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run's supervisor is gone while claude still runs"}
 
 
 def is_worker_command(command):
@@ -141,6 +149,41 @@ def is_worker_command(command):
 
 
 # -- the supervisor's driver --------------------------------------------------
+
+
+class StdinWriter:
+    """Writes messages to claude's stdin from a thread of its own, so a message bigger than the pipe, which claude has not started reading, never holds up the supervisor's loop (its deadline and stop) or the run's lock. `close()` closes stdin once everything queued is written."""
+
+    def __init__(self, stdin, on_error):
+        import queue
+
+        self.stdin = stdin
+        self.on_error = on_error
+        self.queue = queue.Queue()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while True:
+            data = self.queue.get()
+            if data is None:
+                break
+            try:
+                self.stdin.write(data)
+                self.stdin.flush()
+            except (BrokenPipeError, OSError) as e:
+                self.on_error(e)
+                break
+        try:
+            self.stdin.close()
+        except OSError:
+            pass
+
+    def put(self, data):
+        self.queue.put(data)
+
+    def close(self):
+        self.queue.put(None)
 
 
 class Driver:
@@ -164,6 +207,9 @@ class Driver:
         self._first = False
         self.profile = meta["settings"]["profile"]
         self.wt = meta.get("worktree")
+        from .process import log
+
+        self.writer = StdinWriter(proc.stdin, lambda e: log(run_dir, f"stdin write failed: {e}"))
 
     def bind(self, pump):
         self.pump = pump
@@ -187,8 +233,8 @@ class Driver:
             self.init_done.set()
 
     def _deliver(self, msg):
-        self.proc.stdin.write(encode_user_message(msg["text"], msg["uuid"], msg.get("priority")).encode("utf-8"))
-        self.proc.stdin.flush()
+        # Handed to the writer: delivery is recorded under the run's lock, and the write itself happens outside it.
+        self.writer.put(encode_user_message(msg["text"], msg["uuid"], msg.get("priority")).encode("utf-8"))
 
     def _lines_read(self):
         with self.pump.lock:
@@ -241,6 +287,9 @@ class Driver:
                 changes["startup_artifacts"] = self.first_init_result or {}
                 changes["cwd"] = init["cwd"]
                 changes["worktree"] = {**self.wt, "path": init["cwd"]}
+            elif init.get("cwd") and os.path.realpath(init["cwd"]) != os.path.realpath(self.meta.get("cwd") or ""):
+                # Claude Code decides where a session runs (a resumed worktree session re-enters its worktree); the registry records where it works, which is what occupancy and a handover rely on.
+                changes["cwd"] = init["cwd"]
             expect = self.meta.get("expect_cwd")
             if expect and init.get("cwd") and os.path.realpath(init["cwd"]) != os.path.realpath(expect):
                 changes["cwd_mismatch"] = f"cwd_mismatch: claude started in {init['cwd']}, not the recorded worktree {expect}; SessionStart hooks and the first tool call may already have run in the launch directory"
@@ -254,7 +303,8 @@ class Driver:
             self.retrying = False
             changes["retrying_since"] = None
         if changes:
-            update_meta(run_dir, lambda m: m.update(changes))
+            # A run already recorded ended (a reaper's orphan, a stop) keeps its outcome; what the stream reported is added without moving its state.
+            update_meta(run_dir, lambda m: m.update({k: v for k, v in changes.items() if k != "state" or m.get("state") not in TERMINAL}))
             if changes.get("cwd_mismatch"):
                 log(run_dir, changes["cwd_mismatch"])
                 signal_ladder(self.proc.pid, self.proc.pid)
@@ -262,10 +312,7 @@ class Driver:
             if close(run_dir, self._should_close):
                 self.stdin_open = False
                 log(run_dir, "stdin closed")
-                try:
-                    self.proc.stdin.close()
-                except OSError:
-                    pass
+                self.writer.close()
         elif not self.finishing and self.proc.poll() is None:
             # stdin is closed but the process lives on: whatever it still runs (an MCP task) is shown as finishing.
             import time
