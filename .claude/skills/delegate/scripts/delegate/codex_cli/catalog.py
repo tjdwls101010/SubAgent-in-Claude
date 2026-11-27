@@ -1,0 +1,146 @@
+"""This install's version and what it can run, its model catalog read from `codex debug models`, and the pre-spawn check of a model or effort against it."""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+
+from delegate.errors import Refusal
+
+# A `codex` slower than this to answer a local cache read is not answering; the check is skipped rather than holding up every run start.
+CATALOG_TIMEOUT = 5.0
+
+# One lookup per process: a `batch` of N members would otherwise pay N+1 identical subprocess calls.
+_CATALOG_CACHE = []
+_SUPPORT_CACHE = []
+
+# The first release with `--ignore-user-config`, which every isolated run passes; below it a run fails after being reported started.
+ISOLATION_FLOOR = (0, 122, 0)
+# The first release the read-only permissions profile is known to reach both `exec` and `exec resume` and load there. Older releases ignore the `-c` keys or refuse a profile whose working directory is not writable, so a read-only run below it gets the legacy sandbox.
+PROFILE_FLOOR = (0, 160, 0)
+
+# The isolation floor as `--help` names it.
+ISOLATION_FLOOR_TEXT = ".".join(map(str, ISOLATION_FLOOR))
+
+_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(\S*)")
+
+
+def codex_version(strict=False):
+    """What `codex --version` prints, or None when there is no codex or it prints nothing. A failure to run it answers None too, unless `strict`, which lets it propagate so the caller can say why."""
+    exe = shutil.which("codex")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20,
+                           stdin=subprocess.DEVNULL)
+    except Exception:
+        if strict:
+            raise
+        return None
+    return (r.stdout or r.stderr).strip() or None
+
+
+def floor_text(floor) -> str:
+    return ".".join(map(str, floor))
+
+
+def support_for(version_text):
+    """What a `codex --version` line says this install can run: `isolation` (None when the version cannot be read, which is no reason to refuse a run) and the read-only `profile` (False then, which is no promise it works). A pre-release sorts below its release."""
+    m = _VERSION.search(version_text or "")
+    if not m:
+        return {"version": None, "isolation": None, "profile": False}
+    release, pre = tuple(int(x) for x in m.groups()[:3]), m.group(4).startswith("-")
+
+    def meets(floor):
+        return release > floor or (release == floor and not pre)
+
+    return {"version": m.group(0), "isolation": meets(ISOLATION_FLOOR), "profile": meets(PROFILE_FLOOR)}
+
+
+def codex_support():
+    """`support_for` the codex on PATH, asked once per process."""
+    if not _SUPPORT_CACHE:
+        _SUPPORT_CACHE.append(support_for(codex_version()))
+    return _SUPPORT_CACHE[0]
+
+
+def refuse_without_isolation():
+    """Refuse an isolated run on a Codex known to lack `--ignore-user-config`, before anything is claimed."""
+    s = codex_support()
+    if s["isolation"] is False:
+        raise Refusal(f"codex {s['version']} is older than {ISOLATION_FLOOR_TEXT}, the first release with --ignore-user-config, which every isolated run passes; upgrade Codex",
+                      codex_version=s["version"], required_version=ISOLATION_FLOOR_TEXT)
+
+
+def model_catalog():
+    """What this Codex install offers, trimmed to the fields a caller chooses from, or None if it cannot be read.
+
+    Every failure answers None — no binary, non-zero exit, output that is not JSON, JSON of the wrong shape — and callers treat None as "cannot check", never "invalid": a check that blocks a run because its own lookup broke is worse than no check.
+    """
+    if _CATALOG_CACHE:
+        return _CATALOG_CACHE[0]
+    _CATALOG_CACHE.append(None)
+    exe = shutil.which("codex")
+    if not exe:
+        return None
+    # One try around the shaping loop too: valid JSON with a wrong-typed field must also answer None rather than escape as an internal error.
+    try:
+        r = subprocess.run([exe, "debug", "models"], capture_output=True, text=True,
+                           timeout=CATALOG_TIMEOUT, stdin=subprocess.DEVNULL)
+        if r.returncode != 0:
+            return None
+        models = json.loads(r.stdout)["models"]
+        if not isinstance(models, list):
+            return None
+        out = []
+        for m in models:
+            if not isinstance(m, dict) or not m.get("slug"):
+                continue
+            levels = m.get("supported_reasoning_levels")
+            # These fields only: the raw payload is mostly each model's `base_instructions`.
+            out.append({
+                "slug": m["slug"],
+                "display_name": m.get("display_name"),
+                "default_effort": m.get("default_reasoning_level"),
+                "efforts": [lv["effort"] for lv in (levels if isinstance(levels, list) else [])
+                            if isinstance(lv, dict) and lv.get("effort")],
+                "context_window": m.get("context_window"),
+                "visibility": m.get("visibility"),
+                "supported_in_api": m.get("supported_in_api"),
+            })
+    except Exception:
+        return None
+    _CATALOG_CACHE[0] = out or None
+    return _CATALOG_CACHE[0]
+
+
+def check_model_effort(model, effort, *, catalog, model_source=None, effort_source=None):
+    """Refuse a model or effort this install does not offer.
+
+    Callers pass only values being adopted now, never one inherited from the thread being resumed: a model retired upstream must not turn every resume of an old thread into a refusal. `*_source` names where a value came from when it was not typed, per value, so the caller is sent to the right file.
+    """
+    if not catalog or (not model and not effort):
+        return
+    ms = f" (from {model_source})" if model_source else ""
+    es = f" (from {effort_source})" if effort_source else ""
+    by_slug = {m["slug"]: m for m in catalog}
+    if model and model not in by_slug:
+        raise Refusal(f"unknown model {model!r}{ms}: not in this install's catalog, which refreshes on every Codex run",
+                      known_models=sorted(by_slug),
+                      hint="`models` prints the catalog with each model's efforts", arguments=model_source is None)
+    if not effort:
+        return
+    if model:
+        allowed = by_slug[model]["efforts"]
+        if allowed and effort not in allowed:
+            raise Refusal(f"model {model!r} does not accept effort {effort!r}{es}", model=model, valid_efforts=allowed,
+                          default_effort=by_slug[model].get("default_effort"), arguments=effort_source is None)
+        return
+    # No model named, so no single list governs; the union still catches a typo.
+    union = sorted({e for m in catalog for e in m["efforts"]})
+    if union and effort not in union:
+        raise Refusal(f"unknown effort {effort!r}{es}: no model in this install accepts it",
+                      valid_efforts=union,
+                      hint="efforts are per-model; `models` shows which model takes which", arguments=effort_source is None)
