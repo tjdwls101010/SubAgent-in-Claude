@@ -84,8 +84,10 @@ def run_row(run_dir, at=None):
     }
     if meta.get("state") in TERMINAL and worker_alive(meta):
         row["still_writing"] = True
-    if meta.get("stderr_tail"):
-        row["stderr_tail"] = meta["stderr_tail"]
+    if "stderr_tail" in meta:
+        # What the engine recorded is authoritative, empty included: a codex run's stderr without the notice it always prints.
+        if meta["stderr_tail"]:
+            row["stderr_tail"] = meta["stderr_tail"]
     elif row.get("stderr_tail"):
         pass
     elif meta.get("state") == "failed":

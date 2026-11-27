@@ -11,8 +11,8 @@ from delegate.claude_cli import PARENT_IDENTITY
 from delegate.codex_cli import ISOLATION_FLOOR_TEXT, apply_preamble, build_argv, changed_paths, check_model_effort, codex_home, codex_support, config_summary, event_lines, first_thread_id, login_status, model_catalog, read_only_blocker, refuse_without_isolation, scan_progress, stderr_tail
 from delegate.errors import Refusal
 from delegate.git import toplevel
-from delegate.registry import TERMINAL, registry_args, update_meta
-from delegate.util import clip, invocation, now
+from delegate.registry import TERMINAL, registry_args, update_meta, worker_alive
+from delegate.util import clip, invocation, nfc, now
 
 NAME = "codex"
 STDIN = "devnull"
@@ -38,8 +38,15 @@ def read_schema(path, command):
     return json.dumps(obj, ensure_ascii=False)
 
 
+def pin_codex_home():
+    """CODEX_HOME as one absolute path for every codex this process starts — the version and catalog checks, login, and the worker — so they all read the same home (a `~` or relative path would differ by directory or shell)."""
+    if os.environ.get("CODEX_HOME"):
+        os.environ["CODEX_HOME"] = str(Path(os.environ["CODEX_HOME"]).expanduser().resolve())
+
+
 def settings(flags, record=None, *, command="start", cwd=None):
     """The settings for one turn: each from the flags, else from the thread's last recorded run, and for a new thread or one the registry never saw from the flags alone — model and effort included, since an isolated run reads no config.toml and the skill has no default. A model or effort taken up now is checked against this install's catalog (when it can be read); one inherited from the thread is not, so a model retired upstream cannot block the resume of an old thread. `cwd` is where the run will work, which decides whether a read-only run can write scratch."""
+    pin_codex_home()
     record = record or {}
     resume = bool(flags.get("resume"))
     out = {"engine": NAME}
@@ -58,10 +65,15 @@ def settings(flags, record=None, *, command="start", cwd=None):
     adopted_model = flags.get("model")
     adopted_effort = flags.get("effort")
     if adopted_model or adopted_effort:
+        catalog = model_catalog()
+        model = adopted_model
+        if not model and catalog and out["model"] in {m["slug"] for m in catalog}:
+            # A new effort on an inherited model is checked against that model's own efforts; an inherited model gone from the catalog is not checked at all.
+            model = out["model"]
         try:
-            check_model_effort(adopted_model, adopted_effort or (out["effort"] if adopted_model else None), catalog=model_catalog())
+            check_model_effort(model, adopted_effort or (out["effort"] if adopted_model else None), catalog=catalog)
         except Refusal as e:
-            raise Refusal(e.message, arguments=True, help=f"{command} --help", **{k: v for k, v in e.fields.items() if k != "hint"}, hint="`models --engine codex` lists each model with its efforts") from None
+            raise Refusal(e.message, arguments=True, help=f"{command} --help", **{k: v for k, v in e.fields.items() if k != "hint"}, hint="`codex debug models` lists each model with its efforts") from None
     out["sandbox"] = SANDBOX[out["profile"]]
     # A thread recorded as loading config.toml (before isolation existed) keeps loading it; every other run is isolated.
     out["isolated"] = record.get("isolated", True) if record else True
@@ -84,6 +96,7 @@ def settings(flags, record=None, *, command="start", cwd=None):
 
 
 def check_installed():
+    pin_codex_home()
     if not shutil.which("codex"):
         raise Refusal("codex is not on PATH; install the Codex CLI")
     refuse_without_isolation()
@@ -95,7 +108,8 @@ def new_native_id():
 
 
 def check_native_id(ref):
-    if not ref or ref.startswith("-") or any(c.isspace() for c in ref):
+    """A thread id or a thread name, as `codex exec resume` takes it; a word starting with `-` would be read as a flag."""
+    if not ref or not ref.strip() or ref.startswith("-"):
         raise Refusal(f"{ref!r} cannot name a Codex thread", arguments=True, help="resume --help")
 
 
@@ -218,9 +232,8 @@ class Driver:
         info = scan_progress(Path(self.run_dir) / "events.jsonl", terminal=True)
         fields = {"exit_code": returncode, "ended_at": now(), "unparsed_events": info["unparsed_events"]}
         if info["thread_id"]:
-            fields["thread_started"] = True
-            if not meta.get("native_id"):
-                fields["native_id"] = info["thread_id"]
+            # The id Codex confirmed, which replaces a thread name the turn was asked to resume.
+            fields.update({"thread_started": True, "native_id": info["thread_id"]})
         failed = info["turn_failed"]
         if returncode == 0 and not failed and info["thread_id"]:
             fields.update({"state": "completed", "error": None})
@@ -252,9 +265,11 @@ def view(run_dir, meta):
     """The run's events and final-message file read in the skill's terms; keys as `claude.view_of` gives them."""
     run_dir = Path(run_dir)
     live = meta.get("state") not in TERMINAL
-    info = scan_progress(run_dir / "events.jsonl", terminal=not live)
+    writing = worker_alive(meta)
+    info = scan_progress(run_dir / "events.jsonl", terminal=not live and not writing)
     raw = _final(run_dir)
-    decided = not live
+    # An orphan whose codex still runs has no final answer yet, whatever its recorded state.
+    decided = not live and not writing
     schema = (meta.get("settings") or {}).get("schema_text") is not None
     text = raw.decode("utf-8", "replace") if raw is not None else (info["last_agent_message"] or "")
     parsed, parse_error = None, None
@@ -267,7 +282,7 @@ def view(run_dir, meta):
     files = []
     for p in sorted(changed_paths(run_dir / "events.jsonl")):
         try:
-            files.append(str(Path(p).relative_to(cwd)) if cwd else p)
+            files.append(str(Path(nfc(p)).relative_to(nfc(cwd))) if cwd else p)
         except ValueError:
             files.append(p)
     s = meta.get("settings") or {}
@@ -316,6 +331,7 @@ def log_lines(v):
 
 def diagnose(cwd):
     """`{report, blockers, warnings}` for the Codex engine: the codex on PATH and its version against what isolated and read-only runs need, `codex login status`, CODEX_HOME, and what config.toml sets (which an isolated run does not read)."""
+    pin_codex_home()
     blockers, warnings = [], []
     path = shutil.which("codex")
     if not path:
@@ -325,8 +341,9 @@ def diagnose(cwd):
         blockers.append(f"codex {support['version']} is older than {ISOLATION_FLOOR_TEXT}, the first release with --ignore-user-config, which every run passes")
     elif support["version"] is None:
         warnings.append("`codex --version` could not be read, so whether this install isolates runs is unknown")
-    if not support["profile"]:
-        warnings.append("read-only runs get the stricter sandbox that cannot write even a temporary file: this codex is not known to load the read-only profile")
+    blocker = read_only_blocker(toplevel(cwd) or cwd)
+    if blocker:
+        warnings.append(f"read-only runs here get the stricter sandbox: {blocker}")
     login = login_status()
     if login["ok"] is False:
         if login["cause"] == "environment":
@@ -335,5 +352,5 @@ def diagnose(cwd):
             blockers.append("codex is not logged in; run `codex login` in a terminal")
     elif login["ok"] is None:
         warnings.append(f"login could not be checked: {login['detail']}")
-    report = {"path": path, "installed": True, "version": support["version"], "isolation": support["isolation"], "read_only_scratch": support["profile"], "login": login, "codex_home": str(codex_home()), "codex_home_from_env": bool(os.environ.get("CODEX_HOME")), "config": config_summary()}
+    report = {"path": path, "installed": True, "version": support["version"], "isolation": support["isolation"], "read_only_scratch": not blocker, "login": login, "codex_home": str(codex_home()), "codex_home_from_env": bool(os.environ.get("CODEX_HOME")), "config": config_summary()}
     return {"report": report, "blockers": blockers, "warnings": warnings}

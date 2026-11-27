@@ -4,12 +4,12 @@ An adapter owns, for its engine: `NAME`; `STDIN` ("pipe" when messages go in on 
 
 The three things the shared layer keeps apart come from here: whether the run has ended (its recorded state), whether its process is alive (its recorded worker pid), and whether its answer is ready (`view(...)["decided"]`)."""
 
-__all__ = ["ENGINES", "MARKER", "PROFILES", "adapter", "inside_worker", "record_stopped", "signal_ladder", "supervise"]
+__all__ = ["ENGINES", "MARKER", "PROFILES", "adapter", "inside_worker", "record_stopped", "signal_ladder", "supervise", "sweep_group"]
 
 from delegate.errors import Refusal
 
 from . import claude, codex
-from .process import MARKER, inside_worker, record_stopped, run_supervisor, signal_ladder
+from .process import MARKER, inside_worker, record_stopped, run_supervisor, signal_ladder, sweep_group
 
 # Permission profiles share their names across engines so a mixed group's default profile means something to every member; each engine's --help says what a name allows there.
 PROFILES = ("read-only", "write", "full")

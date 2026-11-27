@@ -122,7 +122,17 @@ class TerminalStates(CodexCase):
         grandchild = self.grandchild(pidfile)
         res = self.cli_json("stop", "--run", out["run_id"])["stopped"][0]
         self.assertTrue(self.wait_for(lambda: not alive(grandchild), timeout=10, what="the descendant to be gone"))
-        self.assertEqual(res["signals_sent"], ["SIGINT", "SIGKILL"], "what was sent is what is reported")
+        self.assertEqual(res["signals_sent"], ["SIGINT", "SIGTERM"], "the descendant that ignored SIGINT gets SIGTERM before any SIGKILL; what was sent is what is reported")
+
+    def test_stop_ends_what_a_finished_run_left_running(self):
+        pidfile = self.root / "grandchild.pid"
+        out = self.codex("start", "x", env={"FAKE_CODEX_GRANDCHILD": str(pidfile)})
+        grandchild = self.grandchild(pidfile)
+        self.assertEqual(self.wait_state(out["run_id"])["state"], "completed")
+        self.assertTrue(alive(grandchild), "fixture: the turn left a process running")
+        res = self.cli_json("stop", "--run", out["run_id"])["stopped"][0]
+        self.assertEqual((res["state"], res["signals_sent"]), ("completed", ["SIGTERM"]))
+        self.assertTrue(self.wait_for(lambda: not alive(grandchild), timeout=10, what="the leftover to be gone"))
 
     def test_a_timed_run_that_is_stopped_is_interrupted_not_timed_out(self):
         out, _m = self.running("--timeout", "600", "x")

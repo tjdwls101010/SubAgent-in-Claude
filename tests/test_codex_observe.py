@@ -111,6 +111,7 @@ class Result(Sandbox):
         header, _ = self.result_view("--run", out["run_id"])
         self.assertEqual(header["state"], "orphaned")
         self.assertIn("next", header, "its codex still writes, so the result is not final")
+        self.assertIn("still runs", header["note"])
         self.cli_json("stop", "--run", out["run_id"])
 
     def test_a_resumed_schema_thread_keeps_its_schema(self):

@@ -214,7 +214,7 @@ def find_run(runs_dir, ref, engine=None):
             return str(exact)
     runs = [(d, m) for d, m in iter_runs(runs_dir)]
     natives = [(d, m) for d, m in runs if engine is None or m.get("engine") == engine]
-    by_native = [(d, m.get("engine")) for d, m in natives if m.get("native_id") == ref]
+    by_native = [(d, m.get("engine")) for d, m in natives if ref in (m.get("native_id"), m.get("resume_ref"))]
     if by_native:
         if len({e for _, e in by_native}) > 1:
             raise Refusal(f"{ref!r} names a session or thread in more than one engine; give a run id", matches=[Path(d).name for d, _ in by_native][-10:])

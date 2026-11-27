@@ -57,16 +57,26 @@ def signal_ladder(pgid, pid, *, grace=None, kill_grace=None, on_signal=None):
         end = time.time() + wait
         while time.time() < end and pid_alive(pid, pgid):
             time.sleep(0.05)
-    if sent and sent[-1] != "SIGKILL" and group_alive(pgid):
-        # The group id stays reserved while any member lives, so what answers here is still this run's.
+    if sent and sent[-1] != "SIGKILL":
+        sent += sweep_group(pgid, kill_grace, after=sent[-1])
+    return sent
+
+
+def sweep_group(pgid, kill_grace=None, after=None):
+    """End what of a process group outlived its leader (a tool's child that ignored SIGINT, a server a turn left running): SIGTERM, then SIGKILL after `kill_grace` to whatever is left. The group id stays reserved while any member lives, so what answers here is still this run's. Returns the signals sent."""
+    kill_grace = timings()["kill_grace"] if kill_grace is None else kill_grace
+    sent = []
+    for sig in ((signal.SIGTERM, signal.SIGKILL) if after != "SIGTERM" else (signal.SIGKILL,)):
         end = time.time() + kill_grace
         while time.time() < end and group_alive(pgid):
             time.sleep(0.05)
+        if not group_alive(pgid):
+            break
         try:
-            os.killpg(pgid, signal.SIGKILL)
-            sent.append("SIGKILL")
+            os.killpg(pgid, sig)
+            sent.append(sig.name)
         except (ProcessLookupError, PermissionError):
-            pass
+            break
     return sent
 
 

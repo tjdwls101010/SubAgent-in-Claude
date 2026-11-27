@@ -14,7 +14,7 @@ from pathlib import Path
 from delegate.claude_cli import EFFORTS, PROFILES, VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
 from delegate.git import main_checkout, startup_snapshot, toplevel
-from delegate.registry import TERMINAL, close, enqueue, registry_args, supervisor_alive, take, update_meta
+from delegate.registry import TERMINAL, close, enqueue, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
@@ -402,8 +402,8 @@ def view_of(events, meta, unparsed=0):
     summary = summarize(events)
     final = final_result(events, meta.get("messages") or [])
     live = meta.get("state") not in TERMINAL
-    # Once stdin has closed (finishing) the answer is decided; whatever claude still prints is not it.
-    decided = not live or meta.get("state") == "finishing"
+    # Once stdin has closed (finishing) the answer is decided; whatever claude still prints is not it. An orphan whose claude still runs has not decided.
+    decided = (not live and not worker_alive(meta)) or meta.get("state") == "finishing"
     chosen = final["result"]
     text = chosen["text"] if chosen and decided else (summary["last_message"] or (chosen["text"] if chosen else "")) or ""
     schema = (meta.get("settings") or {}).get("schema_text") is not None

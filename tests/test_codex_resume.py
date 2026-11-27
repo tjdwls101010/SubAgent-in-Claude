@@ -169,3 +169,23 @@ class ALateThreadId(Sandbox):
         refused = self.cli_json("resume", first["native_id"], "again", "--engine", "codex", "--profile", "write", "--cwd", str(self.project), "--model", "fake-big", "--effort", "high", expect=1)
         self.assertIn("live run", refused["error"])
         self.cli_json("stop", "--run", first["run_id"])
+
+
+class ThreadNames(Sandbox):
+    def test_a_thread_resumed_by_name_holds_it_under_its_name_and_its_id(self):
+        """`codex exec resume <name>` answers with the thread's id: the run is found, and its thread held, by either."""
+        given = ["--engine", "codex", "--profile", "write", "--cwd", str(self.project), "--model", "fake-big", "--effort", "high"]
+        first = self.cli_json("resume", "saved thread", "go", *given, env={"FAKE_CODEX_HANG": "60", "FAKE_CODEX_THREAD_ID": "019f0000-0000-7000-0000-0000000000aa"})
+        self.wait_for(lambda: self.status(first["run_id"])["native_id"] == "019f0000-0000-7000-0000-0000000000aa", what="the confirmed id")
+        for ref in ("saved thread", "019f0000-0000-7000-0000-0000000000aa"):
+            with self.subTest(ref=ref):
+                refused = self.cli_json("resume", ref, "again", expect=1)
+                self.assertIn("live run", refused["error"])
+        self.cli_json("stop", "--run", first["run_id"])
+
+    def test_a_new_effort_is_checked_against_the_threads_own_model(self):
+        first = self.codex("start", "x", "--model", "fake-small", "--effort", "low")
+        self.wait_state(first["run_id"])
+        refused = self.cli_json("resume", first["run_id"], "y", "--effort", "ultra", expect=2)
+        self.assertIn("does not accept effort", refused["error"])
+

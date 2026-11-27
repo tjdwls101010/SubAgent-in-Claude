@@ -5,11 +5,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from delegate.engine import adapter, record_stopped, signal_ladder
+from delegate.engine import adapter, record_stopped, signal_ladder, sweep_group
 from delegate.errors import NotFound, Refusal
 from delegate.git import is_worktree, uncommitted_count
 from delegate.registry import TERMINAL, find_run, newest_on, reap, registry_args, resolve_runs_dir, supervisor_alive, update_meta, worker_alive
-from delegate.util import invocation, now, process_command, timings
+from delegate.util import group_alive, invocation, now, process_command, timings
 
 from .create import create_run, default_cwd, refuse_inside_worker, start_reply
 
@@ -121,6 +121,10 @@ def stop_one(run_dir):
     still = worker_alive(meta)
     if meta.get("state") in TERMINAL and not still:
         entry.update({"state": meta["state"], "note": "already ended"})
+        if meta.get("worker_pgid") and group_alive(meta["worker_pgid"]):
+            # The worker ended but left something in its process group running (a server it started): ending that is what this stop asks; the run's outcome stays.
+            entry["signals_sent"] = sweep_group(meta["worker_pgid"], after="SIGINT")
+            entry["note"] = "already ended; what it left running in its process group was ended"
         return entry
     if meta.get("state") not in TERMINAL:
         time.sleep(timings()["pause_before_stop_mark"])

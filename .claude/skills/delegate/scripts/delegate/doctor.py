@@ -18,10 +18,11 @@ def doctor(*, cwd, engine=None, runs_dir=None):
     engines = {}
     for name in ([engine] if engine else list(ENGINES)):
         d = adapter(name).diagnose(cwd)
-        if not engine and d["report"].get("installed") is False:
-            # One engine missing stops only its own runs: named with --engine it is a blocker, otherwise a warning.
-            d = {**d, "warnings": d["blockers"] + d["warnings"], "blockers": []}
         engines[name] = {**d["report"], "ok": not d["blockers"], "blockers": d["blockers"], "warnings": d["warnings"]}
+        if not engine and d["report"].get("installed") is False:
+            # One engine missing stops only its own runs: named with --engine it is a blocker, otherwise a warning in the verdict (the engine's own `ok` stays false).
+            warnings += [f"{name}: {b}" for b in d["blockers"] + d["warnings"]]
+            continue
         blockers += [f"{name}: {b}" for b in d["blockers"]]
         warnings += [f"{name}: {w}" for w in d["warnings"]]
     if not engine and engines and all(e.get("installed") is False for e in engines.values()):

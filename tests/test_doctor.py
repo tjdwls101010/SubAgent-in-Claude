@@ -41,6 +41,7 @@ class Doctor(Sandbox):
         self.assertTrue(d["ok"], d["blockers"])
         self.assertIn("codex: codex is not on PATH", d["warnings"])
         self.assertFalse(d["engines"]["codex"]["installed"])
+        self.assertFalse(d["engines"]["codex"]["ok"], "the engine itself is not ready; only the verdict lets other runs go")
         d = self.doctor(expect=3, env={"PATH": "/usr/bin:/bin"})
         self.assertTrue(any("no engine is installed" in b for b in d["blockers"]))
 

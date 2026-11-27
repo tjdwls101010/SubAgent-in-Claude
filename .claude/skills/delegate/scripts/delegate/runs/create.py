@@ -33,7 +33,7 @@ def refuse_live(engine, runs_dir, native_id):
         for d, meta in runs:
             if meta.get("engine") != engine.NAME or not is_live(meta):
                 continue
-            if meta.get("native_id") == native_id or (meta.get("native_id") is None and engine.discover_native_id(d) == native_id):
+            if native_id in (meta.get("native_id"), meta.get("resume_ref")) or (meta.get("native_id") is None and engine.discover_native_id(d) == native_id):
                 raise Refusal(f"{engine.NAME} {native_id} has a live run {meta.get('run_id')} ({meta.get('state')}{', still writing' if meta.get('state') in TERMINAL else ''}); two processes on one session or thread mix their transcripts", run_id=meta.get("run_id"), state=meta.get("state"), **engine.live_instead(meta.get("run_id"), meta, runs_dir))
         # 성진: an unreadable run whose events do not name its session or thread yet is taken as someone else's; refuse it too if a real case shows such a run was on the same one.
         blind = [d for d in unreadable_runs(runs_dir) if engine.discover_native_id(d) == native_id]
@@ -107,6 +107,8 @@ def create_run(*, runs_dir, engine_name, kind, prompt, settings, cwd, native_id=
             "worktree": worktree,
             "settings": settings,
             "previous_run": previous,
+            # What the turn was asked to continue, which an engine may report back under another id (a Codex thread name, answered with its id).
+            "resume_ref": native_id if kind == "resume" else None,
             "caller_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID"),
         }
         meta.update(engine.extra_meta(cwd, settings))
