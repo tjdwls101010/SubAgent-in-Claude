@@ -11,7 +11,7 @@ from pathlib import Path
 from delegate.engine import adapter, inside_worker
 from delegate.errors import Refusal
 from delegate.git import toplevel
-from delegate.registry import TERMINAL, is_live, live_runs, publish_run, read_meta, registry_args, unreadable_runs, update_meta
+from delegate.registry import TERMINAL, is_live, live_runs, publish_run, read_meta, record_if_active, registry_args, unreadable_runs, update_meta
 from delegate.util import entry_path, invocation, now, timings
 
 WRITERS = ("write", "full")
@@ -129,8 +129,13 @@ def create_run(*, runs_dir, engine_name, kind, prompt, settings, cwd, native_id=
     if on_published:
         on_published(meta)
     time.sleep(timings()["pause_after_publish"])
-    engine.after_publish(run_dir, first["text"], prompt)
-    pid = spawn_supervisor(run_dir)
+    try:
+        engine.after_publish(run_dir, first["text"], prompt)
+        pid = spawn_supervisor(run_dir)
+    except OSError as e:
+        # Published but never handed to a supervisor: record it, so the session is not held by a run nothing drives.
+        record_if_active(run_dir, {"state": "failed", "error": f"could not start the supervisor: {e}", "ended_at": now(), "stdin_open": False})
+        raise
     update_meta(run_dir, lambda m: (m.setdefault("supervisor_pid", pid), m.setdefault("supervisor_pgid", pid)))
     return wait_for_start(run_dir, engine, timings()["init_wait"])
 

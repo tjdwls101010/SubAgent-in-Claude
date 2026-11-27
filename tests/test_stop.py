@@ -60,6 +60,18 @@ class Stop(Sandbox):
         entries = self.stop(a["run_id"], b["run_id"])
         self.assertEqual([e["state"] for e in entries], ["interrupted", "interrupted"])
 
+    def test_without_ps_the_supervisor_ends_the_run(self):
+        """`stop` signals only a process it can tell is this run's worker; when `ps` cannot say, the supervisor, which owns the child, ends it, and the reply says the stop was not done here."""
+        reply = self.start("x [[fake:sleep:30]]")
+        self.wait_state(reply["run_id"], states=("running",))
+        no_ps = {"PATH": os.pathsep.join(p for p in self.env["PATH"].split(os.pathsep) if p not in ("/bin", "/usr/bin", "/usr/sbin", "/sbin"))}
+        (entry,) = self.cli_json("stop", "--run", reply["run_id"], env=no_ps, timeout=120)["stopped"]
+        self.assertEqual(entry["signals_sent"], [])
+        self.assertIn("`ps` could not tell", entry["note"])
+        self.assertEqual(entry["state"], "interrupted")
+        meta = json.loads((self.run_dir(reply["run_id"]) / "meta.json").read_text())
+        self.wait_for(lambda: not pid_alive(meta["worker_pid"]), timeout=30, what="the worker to be gone")
+
     def test_unknown_run(self):
         reply = self.cli_json("stop", "--run", "nope", expect=1)
         self.assertIn("nope", reply["error"])

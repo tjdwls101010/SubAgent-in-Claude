@@ -141,18 +141,21 @@ def supervise(run_dir, adapter):
     os.close(gate_read)
     time.sleep(t["pause_before_pid"])
 
-    def record_pid_and_open(m):
-        # One transition under the run's lock: the pid is recorded and the gate opened only when no stop has been asked for, so a stop lands either before (the engine never runs) or after (it signals a running engine), never in between.
+    def record_pid(m):
         m.update({"worker_pid": proc.pid, "worker_pgid": proc.pid, "started_at": now()})
         if m.get("stop_requested"):
             record_stopped(m)
+
+    def open_gate(m):
+        # Under the same lock, once the pid is written: a stop lands either before (the engine never runs) or after (it finds the pid and signals a running engine), never in between.
+        if m.get("state") in TERMINAL:
             return
         try:
             os.write(gate_write, b"go\n")
         except OSError as e:
             log(run_dir, f"could not open the gate: {e}")
 
-    recorded = update_meta(run_dir, record_pid_and_open)
+    recorded = update_meta(run_dir, record_pid, then=open_gate)
     os.close(gate_write)
     if recorded.get("state") in TERMINAL:
         # The gate closed unopened makes the shell exit without ever running the engine.
@@ -166,6 +169,7 @@ def supervise(run_dir, adapter):
     driver.bind(pump)
     deadline = (now() + float(meta["settings"]["timeout"])) if meta["settings"].get("timeout") else None
     ending = None
+    ladder = None
     while proc.poll() is None:
         driver.tick()
         if ending is None:
@@ -180,8 +184,12 @@ def supervise(run_dir, adapter):
                     log(run_dir, "stop requested and the worker still runs")
                     ending = "stop"
             if ending:
-                threading.Thread(target=signal_ladder, args=(proc.pid, proc.pid), daemon=True).start()
+                ladder = threading.Thread(target=signal_ladder, args=(proc.pid, proc.pid), daemon=True)
+                ladder.start()
         time.sleep(t["poll"])
+    if ladder:
+        # The ladder's last step sweeps what of the group outlived the engine; the outcome is recorded after it.
+        ladder.join(timeout=t["stop_grace"] + 2 * t["kill_grace"] + 5)
     pump.thread.join(timeout=10)
     returncode = proc.returncode
     log(run_dir, f"{adapter.NAME} exited {returncode}")

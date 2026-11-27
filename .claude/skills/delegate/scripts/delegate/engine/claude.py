@@ -160,27 +160,47 @@ class StdinWriter:
         self.stdin = stdin
         self.on_error = on_error
         self.queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.pending = 0
+        self.written = set()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
     def run(self):
         while True:
-            data = self.queue.get()
-            if data is None:
+            item = self.queue.get()
+            if item is None:
                 break
+            uuid, data = item
             try:
                 self.stdin.write(data)
                 self.stdin.flush()
             except (BrokenPipeError, OSError) as e:
                 self.on_error(e)
                 break
+            finally:
+                with self.lock:
+                    self.pending -= 1
+            with self.lock:
+                self.written.add(uuid)
         try:
             self.stdin.close()
         except OSError:
             pass
 
-    def put(self, data):
-        self.queue.put(data)
+    def put(self, uuid, data):
+        with self.lock:
+            self.pending += 1
+        self.queue.put((uuid, data))
+
+    def busy(self):
+        """Whether a queued message is not yet fully written."""
+        with self.lock:
+            return self.pending > 0
+
+    def was_written(self, uuid):
+        with self.lock:
+            return uuid in self.written
 
     def close(self):
         self.queue.put(None)
@@ -234,7 +254,7 @@ class Driver:
 
     def _deliver(self, msg):
         # Handed to the writer: delivery is recorded under the run's lock, and the write itself happens outside it.
-        self.writer.put(encode_user_message(msg["text"], msg["uuid"], msg.get("priority")).encode("utf-8"))
+        self.writer.put(msg["uuid"], encode_user_message(msg["text"], msg["uuid"], msg.get("priority")).encode("utf-8"))
 
     def _lines_read(self):
         with self.pump.lock:
@@ -242,7 +262,7 @@ class Driver:
 
     def _should_close(self, meta):
         delivered = [m for m in meta.get("messages") or [] if m.get("after_line") is not None]
-        if not delivered:
+        if not delivered or self.writer.busy():
             return False
         with self.pump.lock:
             results = list(self.state.results)
@@ -333,7 +353,7 @@ class Driver:
         events, unparsed = read_events(Path(self.run_dir) / "events.jsonl")
         messages = meta.get("messages") or []
         final = final_result(events, messages)
-        fields.update({"exit_code": returncode, "ended_at": now(), "unanswered": [m["uuid"] for m in final["unanswered"]], "undelivered": [m["uuid"] for m in messages if m.get("after_line") is None], "unparsed_events": unparsed})
+        fields.update({"exit_code": returncode, "ended_at": now(), "unanswered": [m["uuid"] for m in final["unanswered"]], "undelivered": [m["uuid"] for m in messages if m.get("after_line") is None or not self.writer.was_written(m["uuid"])], "unparsed_events": unparsed})
         result = final["result"]
         if meta.get("cwd_mismatch"):
             state, error = "failed", meta["cwd_mismatch"]

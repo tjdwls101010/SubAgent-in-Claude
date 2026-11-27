@@ -27,7 +27,8 @@ def doctor(*, cwd, engine=None, runs_dir=None):
     probe = Path(registry)
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    reg["writable"] = probe.is_dir() and os.access(probe, os.W_OK) and (not reg["exists"] or not (Path(registry) / ".locks").exists() or (Path(registry) / ".locks").is_dir())
+    locks = Path(registry) / ".locks"
+    reg["writable"] = probe.is_dir() and os.access(probe, os.W_OK) and (not locks.exists() or (locks.is_dir() and os.access(locks, os.W_OK)))
     if not reg["writable"]:
         blockers.append(f"the registry {registry} cannot be written (it, or the nearest folder that exists, is not a writable directory)")
     reg["live_runs"] = [m.get("run_id") for _, m in live_runs(registry)] if reg["exists"] else []

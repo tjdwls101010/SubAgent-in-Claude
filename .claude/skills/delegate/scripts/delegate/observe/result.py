@@ -29,7 +29,7 @@ def run_result(run_dir, *, wait_reason=None, wait_attention=None, wait_timeout=N
         # The whole header, then the structured output in place of the text.
         doc = dict(header)
         doc["json"] = snap["json"]
-        if not snap["live"] and snap["json"] is None:
+        if not snap["live"] and not worker_alive(meta) and snap["json"] is None:
             # Read, so not a refusal: the run ended without the structured output its schema asked for, and its text is what there is.
             doc["note"] = "the run ended without structured output; `message` is its final text"
             doc["message"] = text

@@ -136,7 +136,10 @@ class Runs(unittest.TestCase):
         c, cdir, _ = self.publish(session="same-id", label="c")
         time.sleep(0.01)
         x, xdir, _ = reg.publish_run(self.runs, "x", lambda runs: None, lambda r, d: {"engine": "codex", "native_id": "same-id", "state": "completed"})
-        self.assertEqual(reg.find_run(self.runs, "same-id"), xdir, "without an engine, the newest")
+        with self.assertRaises(Refusal, msg="without an engine, one id in two engines is ambiguous") as e:
+            reg.find_run(self.runs, "same-id")
+        self.assertIn("more than one engine", e.exception.message)
+        self.assertEqual(reg.find_run(self.runs, x), xdir, "a run id still names its run")
         self.assertEqual(reg.find_run(self.runs, "same-id", engine="claude"), cdir)
         self.assertEqual(reg.newest_on(self.runs, "claude", "same-id"), cdir)
         self.assertIsNone(reg.newest_on(self.runs, "claude", "other"))

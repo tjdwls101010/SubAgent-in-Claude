@@ -77,12 +77,14 @@ def read_meta(run_dir):
     return meta
 
 
-def update_meta(run_dir, change):
-    """Apply `change(meta)` under the run's lock and write the result; `change` edits the dict in place. Returns the new meta."""
+def update_meta(run_dir, change, then=None):
+    """Apply `change(meta)` under the run's lock and write the result; `change` edits the dict in place. `then(meta)`, when given, runs after the write and still under the lock. Returns the new meta."""
     with run_lock(run_dir):
         meta = read_meta(run_dir)
         change(meta)
         write_json(meta_path(run_dir), meta)
+        if then:
+            then(meta)
         return meta
 
 
@@ -133,6 +135,14 @@ def _abandoned(meta):
     return now() - (meta.get("created_at") or 0) >= UNSUPERVISED_GRACE
 
 
+def _reap_quietly(run_dir, meta):
+    """`reap`, but a run that cannot be reaped is shown as it was read: one broken record never stops another run from being published."""
+    try:
+        return reap(run_dir)
+    except (Refusal, OSError, ValueError, IndexError):
+        return meta
+
+
 def new_run_id(label=None):
     slug = re.sub(r"[^a-z0-9-]+", "-", (label or "run").lower()).strip("-")[:24] or "run"
     return f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}-{secrets.token_hex(2)}"
@@ -141,7 +151,7 @@ def new_run_id(label=None):
 def publish_run(runs_dir, label, check, make_meta):
     """Create a run under the registry's publish lock: `check(runs)` sees every readable run as (run_dir, meta), reaped, and may refuse; then a fresh run directory is claimed and `make_meta(run_id, run_dir)` written as its meta.json. Returns (run_id, run_dir, meta)."""
     with publish_lock(runs_dir):
-        check([(d, reap(d)) for d, _ in iter_runs(runs_dir)])
+        check([(d, _reap_quietly(d, m)) for d, m in iter_runs(runs_dir)])
         for _ in range(20):
             run_id = new_run_id(label)
             run_dir = Path(runs_dir) / run_id
@@ -204,9 +214,11 @@ def find_run(runs_dir, ref, engine=None):
             return str(exact)
     runs = [(d, m) for d, m in iter_runs(runs_dir)]
     natives = [(d, m) for d, m in runs if engine is None or m.get("engine") == engine]
-    by_native = [d for d, m in natives if m.get("native_id") == ref]
+    by_native = [(d, m.get("engine")) for d, m in natives if m.get("native_id") == ref]
     if by_native:
-        return by_native[-1]
+        if len({e for _, e in by_native}) > 1:
+            raise Refusal(f"{ref!r} names a session or thread in more than one engine; give a run id", matches=[Path(d).name for d, _ in by_native][-10:])
+        return by_native[-1][0]
     ids = [d for d, m in runs if Path(d).name.startswith(ref)]
     prefixed = {(m.get("engine"), m.get("native_id")) for d, m in natives if (m.get("native_id") or "").startswith(ref)}
     if len(ids) == 1 and not prefixed - {(read_json(Path(ids[0]) / "meta.json").get("engine"), read_json(Path(ids[0]) / "meta.json").get("native_id"))}:

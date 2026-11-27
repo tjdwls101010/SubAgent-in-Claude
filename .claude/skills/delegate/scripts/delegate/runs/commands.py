@@ -86,6 +86,9 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
     elif newest:
         run_cwd = flags.get("cwd") or newest.get("cwd")
         launch_cwd = flags.get("cwd") or newest.get("launch_cwd") or run_cwd
+        if not flags.get("cwd") and run_cwd != launch_cwd and not Path(run_cwd).is_dir():
+            # The session last worked somewhere else than it was launched from (a worktree it re-entered), and that is gone: resuming would carry on in the launch directory instead.
+            raise Refusal(f"the directory this session last worked in, {run_cwd}, is gone; resuming would continue in {launch_cwd}", run_id=newest["run_id"], instead=invocation("resume", newest["run_id"], "<prompt>", "--cwd", "<directory>", *registry_args(registry)), why="name the directory to continue in")
     else:
         run_cwd = launch_cwd = flags.get("cwd") or default_cwd(cwd)
     extra = {}
@@ -94,7 +97,8 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
 
     def precheck():
         # Under the publish lock: the settings were read from `newest`; a turn published since would carry newer ones (a changed profile), and this one would quietly undo them.
-        if newest is not None and newest_on(registry, engine, native_id) != str(Path(registry) / newest["run_id"]):
+        now_newest = newest_on(registry, engine, native_id)
+        if now_newest != (str(Path(registry) / newest["run_id"]) if newest is not None else None):
             raise Refusal(f"{engine} {native_id} had another turn after this resume read its settings; resume again to continue from that one", native_id=native_id)
         if worktree_check:
             worktree_check()
@@ -133,7 +137,9 @@ def stop_one(run_dir):
     signalled = False
     if pgid and pid and still and ours:
         entry["signals_sent"] = signal_ladder(pgid, pid)
-        signalled = True
+        signalled = bool(entry["signals_sent"])
+    elif pgid and pid and still and command is None:
+        entry["note"] = "`ps` could not tell whether the recorded process is this run's, so it was not signalled here" + ("; its supervisor ends it" if supervisor_alive(meta) else " and its supervisor is gone: it may still run")
     # The supervisor records the outcome once the worker exits; when it is gone, record it here. A supervisor that saw the request ends its child itself — the one way when this process could not tell the child is the worker (`ps` unreadable) — so it gets its whole ladder.
     t = timings()
     end = now() + t["kill_grace"] + 5 + (0 if signalled or not supervisor_alive(meta) else 2 * t["stop_grace"] + 3 * t["kill_grace"] + 1)
