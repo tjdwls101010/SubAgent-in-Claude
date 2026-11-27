@@ -58,6 +58,11 @@ def main(argv=None):
     ctx = context(args)
     j = Journal(ctx["registry"])
     if args.step == "inventory":
+        moving = sorted(n for n, s in j.data["schedules"].items() if s and not s.get("rolled_back"))
+        if moving:
+            # A new inventory would see the moving schedules frozen or already rewritten, call them held or not list them, and every later step would pass them by.
+            print(json.dumps({"error": "a move is under way; the inventory it acts on stays as it is", "moving": moving, "instead": "finish the move (resume, verify) or roll it back first"}, ensure_ascii=False))
+            return 1
         inv = inventory(ctx["project"], ctx["repo"], ctx["now"])
         j.set_inventory(inv)
         print(json.dumps(inv, ensure_ascii=False, indent=1))

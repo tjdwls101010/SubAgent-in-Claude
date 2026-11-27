@@ -44,6 +44,13 @@ def verify(j, ctx):
     still_old = sorted(f for f, t in files.items() if t and f not in held_files and (written_by_legacy(t) or OLD_CLI in t))
     problems += [f"{f}: still runs the claude skill" for f in still_old]
     held_labels = {f"{legacy_dispatcher_label(ctx['repo'], r['name'])}.plist" for r in inv["schedules"] if r["class"] == "held" and r.get("name")}
-    old_agents = sorted(p.name for p in agents_dir().glob("*.plist") if p.name not in held_labels and (p.name.startswith("claude-schedule.") or OLD_CLI in p.read_text(errors="replace")))
+    prefix = legacy_dispatcher_label(ctx["repo"], "")
+    # This repository's old dispatchers only: another repository's are its own move's business.
+    old_agents = sorted(p.name for p in agents_dir().glob(f"{prefix}*.plist") if p.name not in held_labels)
+    # Every schedule a step touched must have finished the move or been moved back.
+    for name, s in sorted(j.data["schedules"].items()):
+        row = next((r for r in inv["schedules"] if r.get("name") == name), {})
+        if s and not s.get("rolled_back") and not s.get("resumed") and not (row.get("class") == "finished" and s.get("published")):
+            problems.append(f"{name}: the move stopped after {', '.join(k for k in ('drained', 'state_moved', 'published') if s.get(k)) or 'it started'}; run the next step or roll it back")
     problems += [f"{a}: a LaunchAgent that runs the claude skill" for a in old_agents]
     return {"ok": not problems, "problems": problems, "schedules": rows, "old_workflows": still_old, "old_launch_agents": old_agents}
