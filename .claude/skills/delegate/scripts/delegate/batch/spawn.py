@@ -86,7 +86,7 @@ def missing_ignored(repo, limit=20):
     return tops[:limit]
 
 
-def start_member(runs_dir, group, generation, size, plan, defaults, caller_cwd, facts, origin=None):
+def start_member(runs_dir, group, generation, size, plan, defaults, caller_cwd, facts, origin=None, preflight=True):
     """Start one member; returns its slot and its reply row. A member that fails to start keeps its slot with an `error`."""
     slot = {"index": plan["index"], "label": plan["label"], "kind": plan["kind"], "engine": plan.get("engine"), "run_id": None, "worktree": plan["worktree"], "error": None}
     group_info = {"name": group, "index": plan["index"], "size": size}
@@ -101,7 +101,7 @@ def start_member(runs_dir, group, generation, size, plan, defaults, caller_cwd, 
             wt = plan["worktree"]
             wt_info = {"path": wt["path"], "base": wt["base"], "uncommitted": facts["uncommitted"]} if wt else None
             # A claude member is launched from the repository and Claude Code makes its checkout; a codex member's checkout is cut when it is published, and it runs there.
-            meta = create_run(runs_dir=runs_dir, engine_name=plan["engine"], kind="start", prompt=task["prompt"], settings=plan["settings"], cwd=wt["repo"] if wt else plan["cwd"], launch_cwd=wt["repo"] if wt else None, label=plan["label"] or group, timeout=defaults.get("timeout"), group=group, worktree=wt, group_info=group_info, worktree_info=wt_info, extra_meta={"group_index": plan["index"]}, on_published=published, origin=origin)
+            meta = create_run(runs_dir=runs_dir, engine_name=plan["engine"], kind="start", prompt=task["prompt"], settings=plan["settings"], cwd=wt["repo"] if wt else plan["cwd"], launch_cwd=wt["repo"] if wt else None, label=plan["label"] or group, timeout=defaults.get("timeout"), group=group, worktree=wt, group_info=group_info, worktree_info=wt_info, extra_meta={"group_index": plan["index"]}, on_published=published, origin=origin, preflight=preflight)
             reply = start_reply(meta, runs_dir)
         else:
             reply = resume(ref=task["resume"], engine=plan.get("engine"), prompt=task["prompt"], cwd=caller_cwd, flags={**plan["flags"], "cwd": str(Path(task["cwd"]).expanduser().resolve()) if task.get("cwd") else None}, label=plan["label"], timeout=defaults.get("timeout"), runs_dir=runs_dir, group=group, group_info=group_info, group_index=plan["index"], on_published=published)
@@ -117,8 +117,8 @@ def start_member(runs_dir, group, generation, size, plan, defaults, caller_cwd, 
     return slot, row
 
 
-def start_members(runs_dir, group, generation, plans, defaults, caller_cwd, facts, origin=None):
+def start_members(runs_dir, group, generation, plans, defaults, caller_cwd, facts, origin=None, preflight=True):
     """Start every member at once, so N members cost one start wait, not N."""
     with ThreadPoolExecutor(max_workers=min(8, len(plans))) as pool:
-        futures = [pool.submit(start_member, runs_dir, group, generation, len(plans), p, defaults, caller_cwd, facts, origin) for p in plans]
+        futures = [pool.submit(start_member, runs_dir, group, generation, len(plans), p, defaults, caller_cwd, facts, origin, preflight) for p in plans]
         return [f.result() for f in futures]

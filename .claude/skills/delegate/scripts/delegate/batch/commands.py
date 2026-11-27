@@ -14,8 +14,8 @@ from .spawn import missing_ignored, plan_members, start_members
 from .tasks import parse_tasks
 
 
-def batch(*, name, task_args, tasks_file, defaults, cwd, use_worktrees=False, runs_dir=None, origin=None):
-    """Start every task as a member of group `name`. The name stays reserved until `clean` releases it. `origin` goes into the group's manifest and each fresh member's meta."""
+def batch(*, name, task_args, tasks_file, defaults, cwd, use_worktrees=False, runs_dir=None, origin=None, preflight=True):
+    """Start every task as a member of group `name`. The name stays reserved until `clean` releases it. `origin` goes into the group's manifest and each fresh member's meta; `preflight` False starts fresh members without refusing a used-up limit (a schedule's job)."""
     refuse_inside_worker()
     if not valid_group_name(name):
         raise Refusal(f"group name {name!r}: lowercase letters, digits and hyphens, starting with a letter or digit, at most 40", arguments=True, help="batch --help")
@@ -28,7 +28,7 @@ def batch(*, name, task_args, tasks_file, defaults, cwd, use_worktrees=False, ru
     if origin:
         fields["origin"] = origin
     manifest = claim_group(registry, name, fields)
-    results = start_members(registry, name, manifest["generation"], plans, defaults, cwd, facts, origin=origin)
+    results = start_members(registry, name, manifest["generation"], plans, defaults, cwd, facts, origin=origin, preflight=preflight)
     update_group(registry, name, manifest["generation"], {"members": [slot for slot, _ in results], "spawning_pid": None})
     rows = [row for _, row in results]
     spawned = sum(1 for r in rows if r.get("run_id"))
