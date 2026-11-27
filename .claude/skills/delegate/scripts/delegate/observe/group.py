@@ -118,9 +118,11 @@ def group_result(registry, name, *, manifest=None, wait_reason=None, fresh=None,
         rows.append({"index": slot["index"], "label": slot.get("label"), "engine": meta.get("engine"), "run_id": meta["run_id"], "native_id": meta.get("native_id"), "state": meta.get("state"), "error": meta.get("error"), "bytes": len(text.encode("utf-8")), "shown_bytes": len(shown.encode("utf-8")), "files_changed": len(v["files_changed"]), "permission_denials": len(v["header"].get("permission_denials") or []), "worktree": (meta.get("worktree") or {}).get("path")})
         sections.append(f"--- [{tag}] engine={meta.get('engine')} run={meta['run_id']} state={meta.get('state')} bytes={len(text.encode('utf-8'))}\n" + (shown + "\n" if shown else ""))
     overlaps = {}
-    for (repo, rel), indexes in edited.items():
-        if len(indexes) > 1:
-            overlaps[rel] = sorted(set(indexes))
+    shared = [(repo, rel, sorted(set(indexes))) for (repo, rel), indexes in edited.items() if len(set(indexes)) > 1]
+    for repo, rel, indexes in shared:
+        # A path is named relative to its checkout; one that two repositories both have is named with its repository too.
+        key = rel if sum(1 for _, r, _ in shared if r == rel) == 1 else f"{repo}: {rel}"
+        overlaps[key] = indexes
     header = {
         "group": name,
         "generation": manifest.get("generation"),

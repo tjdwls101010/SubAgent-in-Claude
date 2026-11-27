@@ -188,3 +188,19 @@ class GroupFlagsBelongToTheirEngine(Sandbox):
         self.assertIn("line 2", out["error"])
         self.assertEqual(self.codex_calls(), [])
 
+
+class OverlapsAcrossRepositories(Sandbox):
+    def test_the_same_path_in_two_repositories_is_two_overlaps(self):
+        from support.harness import make_repo
+
+        other = self.root / "other"
+        make_repo(other)
+        path = self.root / "ov.jsonl"
+        lines = [{"prompt": "w [[fake:write:README.md]]", "cwd": str(cwd)} for cwd in (self.project, self.project, other, other)]
+        path.write_text("".join(json.dumps(l) + "\n" for l in lines))
+        reply = self.cli_json("batch", *CLAUDE_RUN, "--group", "ov", "--tasks-file", str(path), timeout=120)
+        for r in reply["runs"]:
+            self.wait_state(r["run_id"])
+        proc = self.cli("result", "--group", "ov", timeout=120)
+        header = json.loads(proc.stdout.split("\n", 1)[0])
+        self.assertEqual(sorted(header["overlaps"].values()), [[1, 2], [3, 4]], header["overlaps"])
