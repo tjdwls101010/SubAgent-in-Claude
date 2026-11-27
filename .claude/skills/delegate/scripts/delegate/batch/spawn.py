@@ -6,20 +6,28 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from delegate.engine import adapter
-from delegate.errors import Refusal
+from delegate.errors import NotFound, Refusal
 from delegate.git import head_commit, local_branches, main_checkout, status_entries, toplevel, uncommitted_count
-from delegate.registry import update_slot
+from delegate.registry import find_run, newest_on, read_meta, update_slot
 from delegate.runs import WRITERS, create_run, resume, start_reply
 
 ROW_DROP = ("next", "events", "note")
 
 
-def member_flags(task, defaults):
-    return {k: task.get(k) or defaults.get(k) for k in ("profile", "model", "effort", "schema")} | {"priority": task.get("priority", defaults.get("priority", False))}
+def member_flags(task, defaults, engine):
+    """A member's settings as its line gives them over the batch's flags. The batch's flags are a new member's defaults, and its model, effort and priority belong to its --engine: they reach a member of that engine (any engine, when the batch names none), never one of another engine, which names its own. A resumed member keeps what its run recorded unless its own line changes it."""
+    own = {k: task.get(k) for k in ("profile", "model", "effort", "schema")} | {"priority": task.get("priority", False)}
+    if task["kind"] != "start":
+        return own
+    out = {k: own[k] or defaults.get(k) for k in ("profile", "schema")}
+    bound = not defaults.get("engine") or engine == defaults.get("engine")
+    out |= {k: own[k] or (defaults.get(k) if bound else None) for k in ("model", "effort")}
+    out["priority"] = task.get("priority", bool(defaults.get("priority")) and bound and adapter(engine).TAKES_PRIORITY)
+    return out
 
 
-def plan_members(group, tasks, defaults, caller_cwd, use_worktrees):
-    """Each member's engine, settings, directory and checkout, decided before anything starts. A fresh member's settings are checked now (a missing engine, model or effort, an effort its engine does not take, a model not in the codex catalog), so a batch that would fail on one member starts none. A fresh member gets a checkout of its own when --worktree is on, its profile can write, it names no cwd, the group gives none, and the repository has a commit to start from."""
+def plan_members(group, tasks, defaults, caller_cwd, use_worktrees, runs_dir=None):
+    """Each member's engine, settings, directory and checkout, decided before anything starts. A fresh member's settings are checked now (a missing engine, model or effort, an effort its engine does not take, a model the engine does not offer), and so are a resume line's own settings against the run it names when the registry has it, so a batch that would fail on one member's settings starts none; a resume ref the registry does not know still fails in its own slot. A fresh member gets a checkout of its own when --worktree is on, its profile can write, it names no cwd, the group gives none, and the repository has a commit to start from."""
     repo = toplevel(caller_cwd)
     head = head_commit(repo) if repo else None
     main = (main_checkout(repo) or repo) if repo else None
@@ -27,12 +35,12 @@ def plan_members(group, tasks, defaults, caller_cwd, use_worktrees):
     before = local_branches(repo) if repo and use_worktrees else []
     plans = []
     for i, task in enumerate(tasks, 1):
-        flags = member_flags(task, defaults)
         plan = {"index": i, "task": task, "label": task.get("label"), "kind": task["kind"], "worktree": None}
         if task["kind"] == "start":
             engine = task.get("engine") or defaults.get("engine")
             if not engine:
                 raise Refusal(f"{task['where']}: no engine — give the task an engine or the batch --engine; there is no default", arguments=True, help="batch --help")
+            flags = member_flags(task, defaults, engine)
             a = adapter(engine)
             plan["engine"] = engine
             plan["cwd"] = str(Path(task["cwd"]).expanduser().resolve()) if task.get("cwd") else (defaults.get("cwd") or repo or str(Path(caller_cwd).resolve()))
@@ -44,14 +52,31 @@ def plan_members(group, tasks, defaults, caller_cwd, use_worktrees):
                 plan["worktree"] = {**a.worktree_plan(repo, f"{group}-{i}", head, main), "branches_before": before}
         else:
             plan["engine"] = task.get("engine")
-            plan["flags"] = flags
+            plan["flags"] = flags = member_flags(task, defaults, None)
+            check_resume_line(task, flags, runs_dir)
         plans.append(plan)
     for p in plans:
         if p["worktree"]:
             why = adapter(p["engine"]).worktree_taken(p["worktree"])
             if why:
-                raise Refusal(why, path=p["worktree"]["path"], branch=p["worktree"]["branch"], instead="clean that group, or choose another group name")
+                raise Refusal(why, path=p["worktree"]["path"], branch=p["worktree"]["branch"], instead="choose another group name; or `clean` the group that left it, if it is still listed — a branch with commits that `clean` kept stays until you delete it")
     return plans, {"repo": repo, "head": head, "uncommitted": uncommitted_count(repo) if repo else None}
+
+
+def check_resume_line(task, flags, runs_dir):
+    """A resume line's own settings, checked against the run it names as `resume` would check them; nothing when the registry does not know the ref, which then fails in its slot as `resume` would."""
+    if not runs_dir or not any(flags.get(k) for k in ("profile", "model", "effort", "priority")):
+        return
+    try:
+        newest = read_meta(find_run(runs_dir, task["resume"], engine=task.get("engine")))
+        if newest.get("native_id"):
+            newest = read_meta(newest_on(runs_dir, newest["engine"], newest["native_id"]))
+    except (NotFound, Refusal):
+        return
+    try:
+        adapter(newest["engine"]).settings({**flags, "resume": True}, dict(newest.get("settings") or {}), command="resume", cwd=newest.get("cwd"))
+    except Refusal as e:
+        raise Refusal(f"{task['where']}: {e.message}", arguments=e.arguments, **{**e.fields, "help": "batch --help"}) from None
 
 
 def missing_ignored(repo, limit=20):

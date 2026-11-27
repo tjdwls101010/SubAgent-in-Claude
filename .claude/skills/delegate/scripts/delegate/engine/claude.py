@@ -18,6 +18,8 @@ from delegate.registry import TERMINAL, close, enqueue, registry_args, superviso
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
+# Whether a run can ask for the priority service tier (`--priority`).
+TAKES_PRIORITY = False
 STDIN = "pipe"
 EXPECTED_MODE = {"read-only": "dontAsk", "write": "acceptEdits", "full": "auto"}
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")

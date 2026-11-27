@@ -21,7 +21,7 @@ def batch(*, name, task_args, tasks_file, defaults, cwd, use_worktrees=False, ru
         raise Refusal(f"group name {name!r}: lowercase letters, digits and hyphens, starting with a letter or digit, at most 40", arguments=True, help="batch --help")
     tasks = parse_tasks(task_args, tasks_file)
     registry = resolve_runs_dir(cwd, runs_dir)
-    plans, facts = plan_members(name, tasks, defaults, cwd, use_worktrees)
+    plans, facts = plan_members(name, tasks, defaults, cwd, use_worktrees, runs_dir=registry)
     # Every slot is in the manifest before anything starts and each gets its run as soon as that run exists, so an interrupted batch leaves its live members where stop --group and clean find them.
     slots = [{"index": p["index"], "label": p["label"], "kind": p["kind"], "engine": p.get("engine"), "run_id": None, "worktree": p["worktree"], "error": None} for p in plans]
     fields = {"size": len(plans), "worktree": use_worktrees, "base": facts["head"], "repo": facts["repo"], "members": slots, "spawning_pid": os.getpid()}
@@ -34,7 +34,7 @@ def batch(*, name, task_args, tasks_file, defaults, cwd, use_worktrees=False, ru
     spawned = sum(1 for r in rows if r.get("run_id"))
     reply = {"group": name, "spawned": spawned, "requested": len(plans), "runs": rows}
     if spawned:
-        reply["next"] = {"command": invocation("result", "--group", name, "--wait", *registry_args(registry)), "run_in_background": True, "why": "returns when every member has ended, one has failed, or one needs attention, and prints each member's result"}
+        reply["next"] = {"command": invocation("result", "--group", name, "--wait", *registry_args(registry)), "run_in_background": True, "why": "returns when every member has ended or one needs attention, and prints each member's result"}
     isolated = [p for p in plans if p["worktree"]]
     if isolated:
         reply["worktrees"] = {"base": facts["head"], "uncommitted_in_your_tree": facts["uncommitted"], "note": "each checkout starts from your local HEAD without your uncommitted changes, and holds only what git tracks (plus, for a claude member, what .worktreeinclude copies); moving changes back into your tree is yours to do, then `clean`"}

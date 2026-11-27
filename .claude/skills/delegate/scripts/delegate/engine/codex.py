@@ -15,6 +15,8 @@ from delegate.registry import TERMINAL, registry_args, update_meta, worker_alive
 from delegate.util import clip, invocation, nfc, now
 
 NAME = "codex"
+# Whether a run can ask for the priority service tier (`--priority`).
+TAKES_PRIORITY = True
 STDIN = "devnull"
 SANDBOX = {"read-only": "read-only", "write": "workspace-write", "full": "danger-full-access"}
 

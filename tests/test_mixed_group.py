@@ -148,3 +148,43 @@ class ARoundThatResumesAMember(Sandbox):
         self.assertEqual((out["removed"], out["kept"]), ([], []))
         self.assertTrue(__import__("pathlib").Path(first["worktree"]).is_dir(), "the checkout is r1's, which r2's clean leaves alone")
         self.assertTrue(self.cli_json("clean", "--group", "r1")["name_released"])
+
+
+class GroupFlagsBelongToTheirEngine(Sandbox):
+    """A group's --model, --effort and --priority are its --engine's: a member of the other engine names its own, and a resumed member keeps what its run recorded."""
+
+    def tasks(self, *lines):
+        path = self.root / f"g-{len(list(self.root.glob('g-*')))}.jsonl"
+        path.write_text("".join(json.dumps(l) + "\n" for l in lines))
+        return str(path)
+
+    def test_the_other_engines_member_keeps_its_own_settings(self):
+        f = self.tasks({"prompt": "c", "engine": "claude", "model": "claude-own-model", "effort": "low"}, {"prompt": "x"})
+        reply = self.cli_json("batch", *CODEX_RUN, "--priority", "--group", "own", "--tasks-file", f, timeout=120)
+        cl, cx = reply["runs"]
+        self.assertNotIn("error", cl, "--priority is the codex members' and never reaches a claude member")
+        self.assertEqual((cl["model"], cl["effort"]), ("claude-own-model", "low"))
+        self.assertEqual(cx["service_tier"], "priority")
+
+    def test_a_member_of_the_other_engine_without_a_model_is_refused_before_anything_starts(self):
+        f = self.tasks({"prompt": "c", "engine": "claude", "effort": "high"}, {"prompt": "x"})
+        out = self.cli_json("batch", *CODEX_RUN, "--group", "none", "--tasks-file", f, expect=2)
+        self.assertIn("--model", out["error"])
+        self.assertEqual(self.codex_calls(), [])
+
+    def test_a_resumed_member_keeps_what_its_run_recorded(self):
+        first = self.start("x")
+        self.wait_state(first["run_id"])
+        f = self.tasks({"prompt": "more", "kind": "resume", "resume": first["run_id"]})
+        reply = self.cli_json("batch", "--engine", "claude", "--model", "claude-other-model", "--effort", "low", "--group", "r", "--tasks-file", f, timeout=120)
+        (row,) = reply["runs"]
+        self.assertEqual((row["model"], row["effort"]), (first["model"], first["effort"]))
+
+    def test_a_resume_line_its_run_cannot_take_starts_nothing(self):
+        first = self.start("x")
+        self.wait_state(first["run_id"])
+        f = self.tasks({"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"}, {"prompt": "more", "kind": "resume", "resume": first["run_id"], "effort": "galaxy"})
+        out = self.cli_json("batch", "--group", "bad-resume", "--tasks-file", f, expect=2)
+        self.assertIn("line 2", out["error"])
+        self.assertEqual(self.codex_calls(), [])
+
