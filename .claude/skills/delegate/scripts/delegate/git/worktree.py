@@ -134,6 +134,26 @@ def unlock_and_remove(repo, path, force):
     return True, None
 
 
+def submodule_commits_only_here(worktree, main):
+    """The initialised submodules of the checkout at `worktree` whose checked-out commit the main checkout's copy of that submodule does not have — commits made there live only in this checkout's own submodule store, so removing it loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
+    code, out, _ = run_git(worktree, "submodule", "status", "--recursive")
+    if code != 0:
+        return []
+    only = []
+    for line in out.splitlines():
+        if not line or line[0] == "-":
+            continue
+        parts = line[1:].split()
+        if len(parts) < 2:
+            continue
+        sha, rel = parts[0], parts[1]
+        there = Path(main) / rel
+        found, _, _ = run_git(str(there), "cat-file", "-e", f"{sha}^{{commit}}") if there.is_dir() else (1, "", "")
+        if found != 0:
+            only.append(rel)
+    return only
+
+
 def commits_beyond(repo, branch, base):
     """How many commits `branch` has that `base` does not, or None when either is unknown."""
     code, out, _ = run_git(repo, "rev-list", "--count", f"{base}..{branch}")

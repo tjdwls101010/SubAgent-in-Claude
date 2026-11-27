@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 from delegate.errors import NotFound, Refusal
-from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, unlock_and_remove
+from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, submodule_commits_only_here, unlock_and_remove
 from delegate.registry import find_run, group_view, is_live, iter_runs, publish_lock, read_meta, reap, registry_args, release_group, unreadable_runs
 from delegate.util import invocation, pid_alive, process_command
 
@@ -159,6 +159,11 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
         if detached and not evidence:
             # Commits no branch holds would be lost with the checkout, so they are kept whatever --force says.
             kept.append({**entry, "reason": f"{detached} commit(s) on a detached HEAD that no branch holds; put them on a branch first", "instead": f"git -C {path} branch <name>"})
+            return
+        stranded = submodule_commits_only_here(str(path), repo)
+        if stranded:
+            # A submodule's commits made in this checkout are stored only in it; they are kept whatever --force says, as detached commits are.
+            kept.append({**entry, "reason": f"submodule(s) {', '.join(stranded)} hold commits your checkout's copy does not have, which removing it would lose", "instead": f"fetch them into your checkout first: git -C <your submodule> fetch {path}/<submodule> HEAD"})
             return
         artifacts = (meta or {}).get("startup_artifacts") or {}
         left = leftovers(path, repo, artifacts)

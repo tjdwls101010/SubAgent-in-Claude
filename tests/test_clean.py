@@ -218,6 +218,26 @@ class ReviewFindings(Sandbox):
         self.assertTrue(self.cli_json("clean", "--group", "d")["name_released"], "following the advice should let clean finish")
         self.assertEqual(git(self.project, "branch", "--list", "--format=%(refname:short)", "saved"), "saved")
 
+    def test_commits_inside_a_submodule_are_kept(self):
+        from support.harness import make_repo
+
+        lib = self.root / "lib"
+        make_repo(lib, {"lib.txt": "1\n"})
+        git(self.project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "lib")
+        git(self.project, "commit", "-q", "-m", "add lib")
+        reply = self.cli_json("batch", *CLAUDE_RUN, "--group", "sm", "--worktree", "--task", "x", timeout=120)
+        self.wait_state(reply["runs"][0]["run_id"])
+        wt = self.project / ".claude" / "worktrees" / "sm-1"
+        git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+        (wt / "lib" / "lib.txt").write_text("2\n")
+        git(wt / "lib", "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "inside the submodule")
+        git(wt, "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "point at it")
+        for args in ((), ("--force",)):
+            out = self.cli_json("clean", "--group", "sm", *args)
+            self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+            self.assertIn("submodule", out["kept"][0]["reason"])
+        self.assertTrue(wt.exists())
+
     def test_orphan_still_writing_keeps_the_group_running_and_clean_refuses(self):
         import signal
         reply = self.cli_json("batch", *CLAUDE_RUN, "--group", "o", "--worktree", "--task", "x [[fake:sleep:25]]", timeout=120)

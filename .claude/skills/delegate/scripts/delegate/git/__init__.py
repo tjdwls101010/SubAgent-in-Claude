@@ -23,6 +23,7 @@ __all__ = [
     "startup_snapshot",
     "status_entries",
     "status_snapshot",
+    "submodule_commits_only_here",
     "toplevel",
     "uncommitted_count",
     "unlock_and_remove",
@@ -30,4 +31,4 @@ __all__ = [
 ]
 
 from .repo import current_branch, head_commit, main_checkout, remote_url, repo_identity, toplevel, uncommitted_count
-from .worktree import add_detached, remove_unfinished, branch_exists, branch_tip, commits_beyond, committed_files, delete_branch, detached_commits, fingerprint, is_worktree, last_changed, leftovers, local_branches, numstat, preserve_leftovers, prune_worktree, startup_snapshot, status_entries, status_snapshot, unlock_and_remove, worktree_entries
+from .worktree import add_detached, remove_unfinished, branch_exists, branch_tip, commits_beyond, committed_files, delete_branch, detached_commits, fingerprint, is_worktree, last_changed, leftovers, local_branches, numstat, preserve_leftovers, prune_worktree, startup_snapshot, status_entries, status_snapshot, submodule_commits_only_here, unlock_and_remove, worktree_entries
