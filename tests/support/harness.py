@@ -26,15 +26,19 @@ ENTRY = Path(os.environ.get("DELEGATE_TEST_ENTRY") or SKILL_DIR / "scripts" / "c
 SCRIPTS = ENTRY.parent
 SUPPORT = Path(__file__).resolve().parent
 FAKE_DIR = SUPPORT / "fake_claude"
+FAKE_CODEX_DIR = SUPPORT / "fake_codex"
 # The fake gh and launchctl are first on PATH in every test too, so nothing in the default suite reaches GitHub or launchd.
 FAKE_GH_DIR = SUPPORT / "fake_gh"
 FAKE_LAUNCHCTL_DIR = SUPPORT / "fake_launchctl"
 FIXTURES = SUPPORT / "fixtures"
 CLAUDE_FIXTURES = FIXTURES / "claude"
+CODEX_FIXTURES = FIXTURES / "codex"
 
 TERMINAL = ("completed", "failed", "interrupted", "timed_out", "orphaned", "quota_exhausted")
 # What a test run names when it starts a claude worker: the fake accepts any model, and a new run must name one.
 CLAUDE_RUN = ("--engine", "claude", "--model", "test-model", "--effort", "high")
+# The same for a codex worker: a model and effort the fake codex's catalog offers.
+CODEX_RUN = ("--engine", "codex", "--model", "fake-big", "--effort", "high")
 # Short timings so lifecycle tests do not wait out production grace periods; the skill reads this one variable and nothing else changes.
 FAST_TIMINGS = {"idle_grace": 0.6, "init_wait": 8, "send_wait": 5, "stop_grace": 2, "finishing_attention": 2, "retry_attention": 2, "stall": 3, "poll": 0.05}
 
@@ -147,13 +151,17 @@ class Sandbox(unittest.TestCase):
         self.home.mkdir()
         self.state = self.root / "fake-state"
         self.state.mkdir()
+        (self.root / "codex-home").mkdir()
         self.project = self.root / "project"
         if self.git_project:
             make_repo(self.project)
         else:
             self.project.mkdir()
         self.env = {
-            "PATH": os.pathsep.join([str(FAKE_DIR), str(FAKE_GH_DIR), str(FAKE_LAUNCHCTL_DIR), os.environ.get("PATH", "")]),
+            "PATH": os.pathsep.join([str(FAKE_DIR), str(FAKE_CODEX_DIR), str(FAKE_GH_DIR), str(FAKE_LAUNCHCTL_DIR), os.environ.get("PATH", "")]),
+            # Pinned and empty, so nothing of the developer's own Codex setup reaches a test.
+            "CODEX_HOME": str(self.root / "codex-home"),
+            "FAKE_CODEX_ARGV_LOG": str(self.root / "codex-argv.jsonl"),
             "FAKE_GH_STATE": str(self.root / "fake-gh"),
             "FAKE_GH_FIXTURES": str(FIXTURES / "github"),
             "FAKE_LAUNCHCTL_STATE": str(self.root / "fake-launchctl"),
@@ -169,6 +177,11 @@ class Sandbox(unittest.TestCase):
         for key in ("TMPDIR", "UV_CACHE_DIR"):
             if key in os.environ:
                 self.env[key] = os.environ[key]
+
+    def with_engine(self, args, run):
+        """`args` for a `start` with the settings of `run` added where `args` does not give them."""
+        given = {a for a in args if isinstance(a, str) and a.startswith("--")}
+        return [x for i, x in enumerate(run) if not (i % 2 == 0 and x in given) and not (i % 2 == 1 and run[i - 1] in given)]
 
     def _teardown(self):
         # Kill whatever fake processes a failing test left behind, then remove the tree.
@@ -240,6 +253,32 @@ class Sandbox(unittest.TestCase):
             except ValueError:
                 pass
         return calls
+
+    def codex(self, *args, expect=0, **kw):
+        """`start` on the codex engine (or any command, passed through) as one JSON line."""
+        args = list(args)
+        if args and args[0] == "start":
+            args = ["start", *self.with_engine(args[1:], CODEX_RUN), *args[1:]]
+        return self.cli_json(*args, expect=expect, **kw)
+
+    def codex_calls(self):
+        """Every `codex exec` the fake recorded: argv, cwd, CODEX_HOME and whether stdin was a terminal, oldest first."""
+        path = self.root / "codex-argv.jsonl"
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()] if path.exists() else []
+        return [r for r in rows if r["argv"][:1] == ["exec"]]
+
+    def config_values(self, argv):
+        """The `-c key=value` entries of an argv, as a dict of raw values."""
+        return dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "-c")
+
+    def result_view(self, *args, expect=0, **kw):
+        """`result` read as its --help says: one JSON header line, then the message whose extent is `message_bytes`."""
+        proc = self.cli("result", *args, **kw)
+        self.assertEqual(proc.returncode, expect, proc.stdout + proc.stderr)
+        line, _, rest = proc.stdout.encode("utf-8").partition(b"\n")
+        header = json.loads(line)
+        body = rest[: header.get("message_bytes", 0)]
+        return header, body
 
     def runs_dir(self, project=None):
         return Path(project or self.project) / ".delegate-runs"

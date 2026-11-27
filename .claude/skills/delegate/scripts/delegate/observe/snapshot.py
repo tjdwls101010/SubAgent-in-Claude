@@ -26,6 +26,8 @@ def snapshot_of(run_dir, attention_override=None):
         **v["header"],
         "message_bytes": len(v["text"].encode("utf-8")),
     }
+    if v["unparsed"]:
+        header["unparsed_events"] = v["unparsed"]
     if live:
         header["note"] = "the answer is in, but the worker is still running something" if v["decided"] else "the run is live: this is its latest message, not its answer"
     return {

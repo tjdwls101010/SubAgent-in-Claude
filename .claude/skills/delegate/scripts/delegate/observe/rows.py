@@ -56,7 +56,7 @@ def run_row(run_dir, at=None):
     row = {
         "run_id": meta["run_id"],
         "engine": meta.get("engine"),
-        "native_id": meta.get("native_id"),
+        "native_id": meta.get("native_id") or v.get("native_id"),
         "state": display_state(meta, v, event_at, at),
         "stored_state": meta.get("state"),
         "label": meta.get("label"),
@@ -86,6 +86,8 @@ def run_row(run_dir, at=None):
         row["still_writing"] = True
     if meta.get("stderr_tail"):
         row["stderr_tail"] = meta["stderr_tail"]
+    elif row.get("stderr_tail"):
+        pass
     elif meta.get("state") == "failed":
         try:
             row["stderr_tail"] = (Path(run_dir) / "stderr.log").read_bytes()[-600:].decode("utf-8", "ignore").strip() or None

@@ -51,8 +51,10 @@ def read_schema(path, command):
     return json.dumps(obj, ensure_ascii=False)
 
 
-def settings(flags, record=None, *, command="start"):
+def settings(flags, record=None, *, command="start", cwd=None):
     """The settings for one turn: each of profile, model, effort and schema from the flags, else from the session's last recorded run (`record`), and for a new session from the flags alone — there is no default model or effort, so a run never depends on which settings file a worker reads. For a session the registry never saw (`record` None, `flags["resume"]`) the model is the session's own (`claude -p --resume` restores it) and the effort must be given, since the session does not keep it."""
+    if flags.get("priority"):
+        raise Refusal("--priority is a codex setting; claude has no service tier to request", arguments=True, help=f"{command} --help")
     record = record or {}
     resume = bool(flags.get("resume"))
     out = {"engine": NAME}
@@ -480,7 +482,10 @@ def attention(meta, v, at):
 
 
 def log_lines(v):
-    return render_rows(v["rows"])
+    lines = render_rows(v["rows"])
+    if v["unparsed"]:
+        lines.append(f"unparsed lines={v['unparsed']}")
+    return lines
 
 
 # -- doctor -----------------------------------------------------------------
@@ -513,6 +518,6 @@ def diagnose(cwd):
         for item in items:
             if item["setting"] in ("sandbox.excludedCommands", "sandbox.enabled", "unreadable settings file"):
                 warnings.append(f"claude {p}: {item['setting']} in {item['file']} — {item['effect']}")
-    report = {"path": info["path"], "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
+    report = {"path": info["path"], "installed": bool(info["path"]), "version": info["version"], "floor": VERSION_FLOOR_TEXT, "verified": _text(VERIFIED_VERSION), "auth": auth, "sandbox": sandbox, "profile_exceptions": exceptions}
     return {"report": report, "blockers": blockers, "warnings": warnings}
 

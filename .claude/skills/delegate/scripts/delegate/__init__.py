@@ -8,6 +8,7 @@ Features (one per reason to change):
 
 Systems (formats someone else owns):
     claude_cli/  everything about the Claude Code CLI: argv and profiles, the worker's environment, stream-json in and out, version, auth, settings files
+    codex_cli/   everything about the Codex CLI: `exec` argv and the read-only permissions profile, the event stream and stderr, CODEX_HOME and config.toml, the model catalog and version floors, login
     git/         the git CLI: top level, main checkout, worktrees, branches, a checkout's state before and after a run
 
 Store:
@@ -17,5 +18,5 @@ Shared:
     errors.py    Refusal, the one error a command turns into an exit code
     util.py      time, text trimming, process liveness, the skill's own invocation string, timings
 
-Imports run feature → store → system → shared; the edges between features are runs → engine, observe → engine, doctor → engine; only engine/ imports claude_cli/.
+Imports run feature → store → system → shared; the edges between features are runs → engine, observe → engine, doctor → engine; only engine/ imports claude_cli/ and codex_cli/.
 """

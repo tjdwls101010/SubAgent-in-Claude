@@ -1,5 +1,6 @@
 __all__ = [
     "EFFORTS",
+    "PARENT_IDENTITY",
     "PROFILES",
     "VERIFIED_VERSION",
     "VERSION_FLOOR",
@@ -27,6 +28,6 @@ __all__ = [
     "worktree_location",
 ]
 
-from .argv import EFFORTS, PROFILES, build_argv, profile_exceptions, turn_preamble, worker_context, worker_env, worktree_location
+from .argv import EFFORTS, PARENT_IDENTITY, PROFILES, build_argv, profile_exceptions, turn_preamble, worker_context, worker_env, worktree_location
 from .install import VERIFIED_VERSION, VERSION_FLOOR, VERSION_FLOOR_TEXT, auth_status, claude_version, parse_usage, quota, sandbox_prereqs, version_floor_check
 from .stream import StreamState, activity_rows, answered_uuids, encode_user_message, final_result, log_lines, read_events, render_rows, summarize

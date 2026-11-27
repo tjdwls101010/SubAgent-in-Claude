@@ -17,8 +17,8 @@ from .create import create_run, default_cwd, refuse_inside_worker, start_reply
 def start(*, engine, prompt, cwd, flags, label=None, timeout=None, runs_dir=None, origin=None, on_published=None):
     """Start a fresh worker on `engine` with `prompt`. `cwd` is where the command was run; `flags` holds profile, model, effort, schema and an explicit working directory (`cwd` key) when given; `origin` is recorded in the run's meta (see `create_run`); `on_published(meta)` is called as soon as the run is in the registry, before the start wait."""
     a = adapter(engine)
-    settings = a.settings(flags, None, command="start")
     run_cwd = flags.get("cwd") or default_cwd(cwd)
+    settings = a.settings(flags, None, command="start", cwd=run_cwd)
     # The registry belongs to the project the command runs in, so `status` there finds the run whatever --cwd says.
     registry = resolve_runs_dir(cwd, runs_dir)
     meta = create_run(runs_dir=registry, engine_name=engine, kind="start", prompt=prompt, settings=settings, cwd=run_cwd, label=label, timeout=timeout, origin=origin, on_published=on_published)
@@ -69,7 +69,6 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
         native_id = ref
     a = adapter(engine)
     record = dict(newest["settings"]) if newest else None
-    settings = a.settings({**flags, "resume": True}, record, command="resume")
     wt = (newest or {}).get("worktree")
     expect_cwd = worktree_info = worktree_check = None
     if wt and engine == "claude":
@@ -91,6 +90,7 @@ def resume(*, ref, prompt, cwd, flags, engine=None, label=None, timeout=None, ru
             raise Refusal(f"the directory this session last worked in, {run_cwd}, is gone; resuming would continue in {launch_cwd}", run_id=newest["run_id"], instead=invocation("resume", newest["run_id"], "<prompt>", "--cwd", "<directory>", *registry_args(registry)), why="name the directory to continue in")
     else:
         run_cwd = launch_cwd = flags.get("cwd") or default_cwd(cwd)
+    settings = a.settings({**flags, "resume": True}, record, command="resume", cwd=run_cwd)
     extra = {}
     if group_index is not None:
         extra["group_index"] = group_index

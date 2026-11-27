@@ -24,7 +24,7 @@ def toplevel(path, env=None):
 
 
 def main_checkout(path):
-    """The repository's main checkout: the first `git worktree list` record, seen the same from any linked worktree. A bare repository has no main checkout, and a submodule is its own, so both answer with the checkout `path` is in. None outside a git work tree."""
+    """The repository's main checkout: the first `git worktree list` record, seen the same from any linked worktree, resolved through git again — for a submodule's linked worktree that record is the submodule's git directory under the superproject's .git/modules, which `--show-toplevel` resolves to the submodule's own checkout. A bare repository has no main checkout, and a linked worktree whose main checkout is gone answers with itself, as does a path git cannot answer for. None outside a git work tree."""
     top = toplevel(path)
     if top is None:
         return None
@@ -32,14 +32,14 @@ def main_checkout(path):
     if code != 0:
         return top
     first = out.split("\n\n", 1)[0].splitlines()
-    worktree = next((l[len("worktree "):] for l in first if l.startswith("worktree ")), None)
-    if worktree is None or "bare" in first:
+    if not first or not first[0].startswith("worktree ") or "bare" in first:
         return top
-    worktree = nfc(worktree)
-    # A submodule's list starts at its git directory under the superproject's .git/modules, which is not a checkout: only a record that is its own top level is one.
-    if not os.path.isdir(worktree) or toplevel(worktree) != worktree:
+    record = nfc(first[0][len("worktree "):])
+    if not os.path.isdir(record):
         return top
-    return worktree
+    code, out, _ = run_git(record, "rev-parse", "--path-format=absolute", "--show-toplevel")
+    resolved = nfc(out.strip()) if code == 0 and out.strip() else None
+    return resolved if resolved and os.path.isdir(resolved) else top
 
 
 def head_commit(path):

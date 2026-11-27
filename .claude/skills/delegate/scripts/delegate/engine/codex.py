@@ -222,8 +222,10 @@ class Driver:
             if not meta.get("native_id"):
                 fields["native_id"] = info["thread_id"]
         failed = info["turn_failed"]
-        if returncode == 0 and not failed:
+        if returncode == 0 and not failed and info["thread_id"]:
             fields.update({"state": "completed", "error": None})
+        elif returncode == 0 and not failed:
+            fields.update({"state": "failed", "error": "codex exited without starting a thread"})
         else:
             message = (failed or {}).get("message") if isinstance(failed, dict) else None
             tail = stderr_tail(Path(self.run_dir) / "stderr.log")

@@ -161,7 +161,8 @@ def start_reply(meta, runs_dir):
     }
     if not engine.started(meta) and meta.get("state") not in TERMINAL:
         reply["note"] = engine.not_started_note()
-    if meta.get("state") in TERMINAL and meta.get("state") != "completed":
+    if meta.get("state") in TERMINAL and meta.get("state") != "completed" and not engine.started(meta):
+        # Ended before the engine took the run: a start that failed. A run that failed after it started is the result's to report.
         reply["error"] = meta.get("error")
         if meta.get("stderr_tail"):
             reply["stderr_tail"] = meta["stderr_tail"]

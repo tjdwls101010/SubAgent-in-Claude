@@ -45,7 +45,7 @@ class Frontmatter(unittest.TestCase):
 
 
 # Model names as the engines spell them: the aliases `claude -p /model` offers and the families behind them. The skill names none of them, so a model's release never makes its text stale; `models` reads them at run time.
-MODEL_NAMES = re.compile(r"(?i)\b(sonnet|opus|haiku|fable)\b|claude-(sonnet|opus|haiku|fable)-")
+MODEL_NAMES = re.compile(r"(?i)\b(sonnet|opus|haiku|fable)\b|claude-(sonnet|opus|haiku|fable)-|\bgpt-\d")
 
 
 class NoModelNames(unittest.TestCase):
@@ -61,7 +61,7 @@ class NoModelNames(unittest.TestCase):
         self.assertEqual(found, [])
 
     def test_the_check_catches_a_model_name(self):
-        for text in ("--model opus", "default sonnet", "claude-haiku-5-5", "Fable"):
+        for text in ("--model opus", "default sonnet", "claude-haiku-5-5", "Fable", "gpt-6.2-sol"):
             self.assertTrue(MODEL_NAMES.search(text), text)
         self.assertIsNone(MODEL_NAMES.search("opuscule"))
 

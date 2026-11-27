@@ -207,7 +207,7 @@ def supervise(run_dir, adapter):
         if m.get("stop_requested"):
             fields.update({"state": "interrupted", "error": "stopped"})
         elif m.get("timed_out_at"):
-            fields.update({"state": "timed_out", "error": f"--timeout of {m['settings'].get('timeout'):g} s passed"})
+            fields.update({"state": "timed_out", "error": f"timed out: its --timeout of {m['settings'].get('timeout'):g} s passed"})
         fields.setdefault("exit_code", returncode)
         fields.setdefault("ended_at", now())
         if fields.get("state") == "failed" and stderr_tail and "stderr_tail" not in fields:
