@@ -82,8 +82,11 @@ def pid_alive(pid, pgid=None):
     if pgid is not None:
         try:
             return os.getpgid(pid) == pgid
-        except OSError:
+        except ProcessLookupError:
             return False
+        except OSError:
+            # Unknown is not "someone else's": a live run taken for dead would be recorded orphaned.
+            return True
     try:
         # A zombie still answers kill(0); reap it if it is our child, and treat it as gone.
         done, _ = os.waitpid(pid, os.WNOHANG)

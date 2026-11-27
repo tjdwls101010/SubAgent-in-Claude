@@ -139,7 +139,8 @@ class StatusAndLog(Sandbox):
         header, _ = json.loads(self.cli("result", "--run", reply["run_id"]).stdout.splitlines()[0]), None
         self.assertIn("live", header["note"])
         self.assertIn("next", header)
-        row = self.status(reply["run_id"])
+        # The fake's tool call follows its init by a moment, as a real model's does; read the row once it is there.
+        row = self.wait_for(lambda: (r := self.status(reply["run_id"]))["in_progress"] and r, what="the tool call in progress")
         self.assertEqual([p["tool"] for p in row["in_progress"]], ["Bash"])
         self.assertTrue(row["stdin_open"])
         self.cli_json("stop", "--run", reply["run_id"])
