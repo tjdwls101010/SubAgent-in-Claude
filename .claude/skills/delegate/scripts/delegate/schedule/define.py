@@ -10,8 +10,8 @@ from delegate.engine import adapter
 from delegate.errors import Refusal
 from delegate.git import branch_contains, main_checkout, remote_url, toplevel
 from delegate.github import GitHubError, delete_workflow, written_by_legacy, gh_status, legacy_workflow_file, list_workflow_files, local_runners, parse_spec, read_workflow, render_workflow, repo_facts, repo_from_remote, reserved_name, runner_problems, runners, scrub_job_env, set_workflow_enabled, workflow_file, workflow_state, workflow_states, write_workflow
-from delegate.launchd import agent_state, agents_dir, calendar_entries, install_agent, label_problem, list_agents, remove_agent, render_agent, supported, system_timezone
-from delegate.registry import latest_job, read_meta, remove_schedule_state, resolve_runs_dir, schedule_dir, schedule_lock, schedule_runs_live, schedule_state_holder, write_definition
+from delegate.launchd import agent_identity, agent_state, agents_dir, calendar_entries, install_agent, label_problem, list_agents, remove_agent, render_agent, supported, system_timezone
+from delegate.registry import LEGACY_RUNS_DIR, latest_job, read_meta, remove_schedule_state, resolve_runs_dir, schedule_dir, schedule_lock, schedule_runs_live, schedule_state_holder, take_over_legacy_state, write_definition
 from delegate.runs import refuse_inside_worker
 from delegate.util import entry_path, iso, path_key
 
@@ -28,6 +28,19 @@ def dispatcher_log(repo, name):
 
 def dispatcher_argv(gh, repo, file, branch):
     return [gh, "workflow", "run", file, "--repo", repo, "--ref", branch, "-f", "source=dispatcher"]
+
+
+def _remove_legacy_dispatcher(repo, name):
+    """Remove the dispatcher the `claude` skill installed for schedule `name` of `repo`, when its plist is that dispatcher — its own label, dispatching to this repository — or None when there is none. Left in place, it would start the same workflow a second time, or keep firing at a file that is gone."""
+    label = legacy_dispatcher_label(repo, name)
+    found = agent_identity(label)
+    if found is None:
+        return None
+    argv = found["argv"]
+    target = argv[argv.index("--repo") + 1] if "--repo" in argv[:-1] else None
+    if found["label"] != label or (target or "").lower() != repo.lower():
+        return None
+    return remove_agent(label)
 
 
 def _gh_ready(need_workflow_scope=True):
@@ -248,12 +261,17 @@ def schedule(*, name, flags, cwd, dry_run=False, public_ok=False, message=None, 
                 was_disabled = True
         except GitHubError as e:
             warnings.append(f"whether the workflow is enabled could not be checked or changed: {e.message}; `gh workflow enable {shlex.quote(file)} --repo {repo}` enables it")
+        if current is not None and written_by_legacy(current["text"]):
+            # Taken over from the `claude` skill: the slots it filled come along, so a trigger of the new command does not run one of them again, and its record lets go of the definition, so a job its command still runs leaves the schedule alone at its end.
+            take_over_legacy_state(registry, name, str(Path(project) / LEGACY_RUNS_DIR))
         dispatcher = install_agent(label, argv, calendar, log)
-        if dispatcher["status"] == "installed" and current is not None and written_by_legacy(current["text"]):
-            # Taken over from the `claude` skill: its dispatcher would start the same workflow a second time.
-            old_label = legacy_dispatcher_label(repo, name)
-            if agent_state(old_label) != "missing":
-                dispatcher["replaced"] = remove_agent(old_label)
+        if dispatcher["status"] == "installed":
+            # Tried on every call, so a takeover whose first call could not install the new dispatcher still removes the old one.
+            replaced = _remove_legacy_dispatcher(repo, name)
+            if replaced:
+                dispatcher["replaced"] = replaced
+                if replaced["status"] == "failed":
+                    warnings.append(f"the claude skill's dispatcher {replaced['label']} could not be removed ({replaced.get('error')}), so it would start this workflow a second time; run the same command again")
         if dispatcher["status"] != "installed":
             warnings.append("the dispatcher was not installed, so only GitHub's backup cron starts this schedule, often late; run the same command again")
         write_definition(registry, name, spec["definition"])
@@ -305,6 +323,9 @@ def unschedule(*, name, cwd, message=None):
             notes.append(f"the dispatcher plist path holds {holder_words(plist_held)}, which was left alone")
         else:
             reply["dispatcher"] = remove_agent(label)
+        old = _remove_legacy_dispatcher(repo, name)
+        if old:
+            reply["dispatcher"]["claude_skill"] = old
         if "workflow" not in reply:
             if current is None:
                 reply["workflow"] = {"status": "absent", "path": f".github/workflows/{file}"}
@@ -384,4 +405,12 @@ def schedules(*, cwd):
     prefix = dispatcher_label(repo, "")
     # Only plists that are this repository's own: the prefix also matches another repository's labels, and a path can hold another label's plist.
     orphans = [{"label": l, "plist": str(agents_dir() / f"{l}.plist")} for l in list_agents(prefix) if l[len(prefix):] not in names and dispatcher_holder(repo, l[len(prefix):]) is None]
+    old_prefix = legacy_dispatcher_label(repo, "")
+    # The `claude` skill's dispatchers too: one whose schedule is gone fires at a file that is not there.
+    for l in list_agents(old_prefix):
+        found = agent_identity(l)
+        argv = (found or {}).get("argv") or []
+        target = argv[argv.index("--repo") + 1] if "--repo" in argv[:-1] else None
+        if l[len(old_prefix):] not in names and (target or "").lower() == repo.lower():
+            orphans.append({"label": l, "plist": str(agents_dir() / f"{l}.plist"), "written_by": "claude skill"})
     return {"repo": repo, "schedules": out, "orphans": orphans}

@@ -14,6 +14,8 @@ from .runs import TERMINAL, ensure_runs_dir, is_live, iter_runs, reap
 
 KEEP = 50
 NOT_COMPLETED = ("failed", "timed_out", "orphaned")
+# The registry the `claude` skill this one replaces kept beside this one, in the same project, with schedule state of the same format.
+LEGACY_RUNS_DIR = ".claude-runs"
 
 
 def schedule_dir(registry, name):
@@ -93,7 +95,11 @@ def _completed_or_live(registry, name, state, job):
     """Whether the job that filled a slot got somewhere that a retry must not repeat: its run completed, was stopped, or is still live. A refusal before any run, and a run that failed, timed out or was orphaned, did not."""
     meta = _job_run(registry, name, job)
     if meta is None:
-        return ((state["jobs"].get(job) or {}).get("outcome") or {}).get("kind") != "refused"
+        rec = state["jobs"].get(job) or {}
+        if rec.get("legacy_run_state"):
+            # A job of the `claude` skill, whose run is in that skill's registry: how it ended was recorded when its state was taken over.
+            return rec["legacy_run_state"] not in NOT_COMPLETED
+        return (rec.get("outcome") or {}).get("kind") != "refused"
     if is_live(meta) or meta.get("state") not in TERMINAL:
         return True
     return meta.get("state") not in NOT_COMPLETED
@@ -185,6 +191,25 @@ def schedule_lock(registry, name):
 def read_definition(registry, name):
     """The definition the latest `schedule` committed, as this Mac recorded it, or None. Call under schedule_lock."""
     return (schedule_state(registry, name) or {}).get("definition")
+
+
+def take_over_legacy_state(registry, name, legacy_registry):
+    """What the `claude` skill recorded of schedule `name` — its filled slots, and its jobs marked legacy with how each one's run ended — as this skill's record, when this skill holds none of its own yet; then the old record's definition is cleared, so a job the old command still runs leaves the schedule alone at its end. Call under schedule_lock. Returns whether there was an old record."""
+    old_path = Path(legacy_registry) / ".schedules" / name / "state.json"
+    with locked(Path(legacy_registry) / ".locks" / f"schedule-{name}.lock"):
+        old = read_json(old_path)
+        if not old:
+            return False
+        current = schedule_state(registry, name)
+        if not (current and any(not r.get("legacy") for r in (current.get("jobs") or {}).values())):
+            jobs = {}
+            for job, rec in (old.get("jobs") or {}).items():
+                ended = (read_json(Path(legacy_registry) / rec["run_id"] / "meta.json") or {}).get("state") if rec.get("run_id") else None
+                jobs[job] = {**rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
+            _save(registry, name, {"name": name, "last_slot": old.get("last_slot"), "slots": old.get("slots") or {}, "jobs": jobs, "definition": (current or {}).get("definition")})
+        if old.get("definition") is not None:
+            write_json(old_path, {**old, "definition": None})
+        return True
 
 
 def write_definition(registry, name, definition):

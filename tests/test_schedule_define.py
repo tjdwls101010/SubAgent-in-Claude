@@ -675,12 +675,48 @@ class Legacy(Scheduling):
         self.assertEqual(self.plist()["Label"], LABEL)
         self.assertNotIn("written_by", self.cli_json("schedule", "--list")["schedules"][0])
 
+    OLD_LABEL = LABEL.replace("delegate-schedule.", "claude-schedule.", 1)
+
     def test_unschedule_removes_the_old_file(self):
         self.plant("claude-nightly.yml", self.legacy())
-        self.plant_plist()
+        self.plant_plist(label=self.OLD_LABEL)
         reply = self.cli_json("unschedule", "--name", "nightly")
-        self.assertEqual((reply["workflow"], reply["dispatcher"]["status"]), ({"status": "deleted", "path": ".github/workflows/claude-nightly.yml", "commit": reply["workflow"]["commit"]}, "removed"))
+        self.assertEqual(reply["workflow"], {"status": "deleted", "path": ".github/workflows/claude-nightly.yml", "commit": reply["workflow"]["commit"]})
+        self.assertEqual(reply["dispatcher"]["claude_skill"]["status"], "removed")
+        self.assertIsNone(self.plist(self.OLD_LABEL), "the claude skill's dispatcher would keep firing at a file that is gone")
         self.assertEqual(self.files(), [])
+
+    def old_record(self, slot, ended="completed"):
+        d = self.project / ".claude-runs" / ".schedules" / "nightly"
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(json.dumps({"name": "nightly", "last_slot": slot, "slots": {str(slot): {"job": "1-1", "retried": None}}, "jobs": {"1-1": {"trigger": "dispatcher", "profile": "write", "slot": slot, "run_id": "old-1", "at": slot + 60}}, "definition": "715ffbd0"}))
+        run = self.project / ".claude-runs" / "old-1"
+        run.mkdir()
+        (run / "meta.json").write_text(json.dumps({"run_id": "old-1", "state": ended}))
+        return d / "state.json"
+
+    def test_a_takeover_keeps_the_slots_the_old_skill_filled(self):
+        slot = NOW - 3600
+        old = self.old_record(slot)
+        self.plant("claude-nightly.yml", self.legacy())
+        self.schedule("--profile", "write")
+        claim = registry.claim_slot(str(self.runs_dir()), "nightly", slot, "2-1", {"trigger": "schedule", "mode": "run", "profile": "write"})
+        self.assertEqual(claim["decision"], "skip", "a late trigger of the new command does not run a slot the old one ran")
+        self.assertIsNone(json.loads(old.read_text())["definition"], "a job the old command still runs leaves the schedule alone at its end")
+
+    def test_a_takeover_whose_first_call_could_not_install_still_removes_the_old_dispatcher(self):
+        self.plant("claude-nightly.yml", self.legacy())
+        self.plant_plist(label=self.OLD_LABEL)
+        self.cli_json("schedule", "--name", "nightly", env={"FAKE_LAUNCHCTL_FAIL": "bootstrap"})
+        self.assertTrue(self.plist(self.OLD_LABEL), "kept while nothing replaces it")
+        reply = self.schedule()
+        self.assertEqual(reply["dispatcher"]["replaced"]["status"], "removed")
+        self.assertIsNone(self.plist(self.OLD_LABEL))
+
+    def test_an_old_dispatcher_whose_schedule_is_gone_is_an_orphan(self):
+        self.plant_plist(label=self.OLD_LABEL.replace(".nightly", ".gone"))
+        orphans = self.cli_json("schedule", "--list")["orphans"]
+        self.assertEqual([(o["label"], o.get("written_by")) for o in orphans], [(self.OLD_LABEL.replace(".nightly", ".gone"), "claude skill")])
 
     def test_the_old_file_is_the_schedule_beside_a_hand_written_file_of_the_new_name(self):
         hand = "name: foo\non: push\n"
