@@ -419,7 +419,7 @@ def _end_one_off(spec, ctx, registry, rec, state):
     repo = ctx.get("repository")
     name = spec["name"]
     notes, warnings = [], []
-    ended = {"disabled": False, "dispatcher": None}
+    ended = {"disabled": False, "dispatcher": None, "workflow": None}
     # The definition the job was started from, as its Run step recorded it: a Finish run again later may be given the flags of a schedule set since.
     mine = rec.get("definition") or spec.get("definition")
     with schedule_lock(registry, name):
@@ -427,7 +427,7 @@ def _end_one_off(spec, ctx, registry, rec, state):
         if current != mine:
             return ["This one-off was scheduled again or removed while it ran, so this run left the newer definition alone."], []
         # The file this job's step names: a step written before files took the name as given names claude-NAME.yml, and so is one that names none.
-        file = spec.get("workflow") or legacy_workflow_file(name)
+        file = ended["workflow"] = spec.get("workflow") or legacy_workflow_file(name)
         try:
             set_workflow_enabled(repo, file, False)
             ended["disabled"] = True
@@ -545,7 +545,12 @@ def _repository_of(registry, rec):
 
 
 def _end_again(step, spec, ctx, registry, rec):
-    """Finish run again for a job that already finished: only a one-off's end (disabling its workflow, removing its dispatcher) is tried again — no worker is stopped or started and no summary rewritten — so it can be repeated until the end holds. Exits 1 while something of the end is still undone."""
+    """Finish run again for a job that already finished: only a one-off's end (disabling its workflow, removing its dispatcher) is tried again — no worker is stopped or started and no summary rewritten — so it can be repeated until the end holds; once it has held, nothing is done again. Exits 1 while something of the end is still undone."""
+    end = rec.get("one_off_end") or {}
+    if end.get("done"):
+        # A workflow enabled again since, as the summary says to run it by hand, is someone's choice, not an end left undone.
+        step.say(json.dumps({"job": ctx["job"], "finished_before": True, "one_off_end": end}, ensure_ascii=False))
+        return 0
     state = None
     if rec.get("run_id"):
         with contextlib.suppress(Refusal, OSError):

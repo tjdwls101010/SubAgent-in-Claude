@@ -257,7 +257,7 @@ def _alerts(snapshot, context):
         if state in RED:
             if state == "quota_exhausted":
                 resets, tz = meta.get("resets_at"), context["timezone"]
-                head = "**The run ended `quota_exhausted`: the account's usage limit is used up" + (f" until {_local(resets, tz, '%Y-%m-%d %H:%M')} {_zone(resets, tz)}" if isinstance(resets, (int, float)) else "") + ". This time is not tried again.**"
+                head = "**The run ended `quota_exhausted`: the account's usage limit is used up" + (f" until {_local(resets, tz, '%Y-%m-%d %H:%M')} {_zone(resets, tz)}" if isinstance(resets, (int, float)) else "") + ". No trigger tries this time again; a Re-run you start on GitHub runs it.**"
             else:
                 head = {"failed": "**The run failed.**", "timed_out": "**The run timed out.**", "orphaned": "**The run's supervisor died before recording an outcome.**"}[state]
             caution.append(head + (f" {code_span(_one_line(meta.get('error'), 300))}" if meta.get("error") else ""))

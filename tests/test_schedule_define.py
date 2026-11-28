@@ -711,6 +711,19 @@ class Legacy(Scheduling):
         self.cli_json("unschedule", "--name", "nightly")
         self.assertIsNone(json.loads(old.read_text())["definition"])
 
+    def test_unschedule_of_a_name_that_differs_only_by_case_keeps_the_old_records_definition(self):
+        probe = self.root / "Case_Probe"
+        probe.mkdir()
+        if not (self.root / "case_probe").exists():
+            self.skipTest("the temporary directory is on a file system that tells letter case apart, where the two names do not share a path")
+        old = self.old_record(NOW - 3600)
+        self.plant("claude-nightly.yml", self.legacy())
+        self.plant_plist(label=self.OLD_LABEL)
+        self.cli_json("unschedule", "--name", "NIGHTLY")
+        self.assertEqual(json.loads(old.read_text())["definition"], "715ffbd0", "the old record is schedule nightly's, which is still there")
+        self.assertEqual(self.files(), ["claude-nightly.yml"])
+        self.assertTrue(self.plist(self.OLD_LABEL))
+
     def test_a_takeover_whose_first_call_could_not_install_still_removes_the_old_dispatcher(self):
         self.plant("claude-nightly.yml", self.legacy())
         self.plant_plist(label=self.OLD_LABEL)
@@ -1129,6 +1142,19 @@ class OneOff(Scheduling):
         self.assertEqual((self.root / "job" / "1" / "summary").read_text(), summary, "the summary stays as the job wrote it")
         self.assertEqual(self.cli_json("doctor", "--engine", "claude", timeout=120)["schedule"]["unfinished_one_offs"], [])
 
+    def test_doctor_reads_the_one_offs_own_workflow_file(self):
+        # The disable failed and someone then disabled nightly.yml by hand, as the summary says; claude-nightly.yml is another workflow of the repository.
+        spec = self.make()
+        self.world(fail_disable=True)
+        self.job(spec, "1", "x")
+        self.world(fail_disable=False)
+        self.plant("claude-nightly.yml", "name: other\non: push\n")
+        w = self.world()
+        w["repos"][REPO]["workflows"]["nightly.yml"] = "disabled_manually"
+        self.world(w)
+        self.assertIsNone(self.plist())
+        self.assertEqual(self.cli_json("doctor", "--engine", "claude", timeout=120)["schedule"]["unfinished_one_offs"], [])
+
     def test_finish_run_again_for_an_old_job_leaves_the_one_off_scheduled_since(self):
         # The one-off ran and ended; it was scheduled again for the next day; then the old job's Finish is run again with the flags the workflow holds now.
         spec = self.make()
@@ -1142,6 +1168,20 @@ class OneOff(Scheduling):
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertEqual(self.wf_state(), "active", "the one-off scheduled since is not the old job's")
         self.assertIsNotNone(self.plist())
+
+    def test_finish_run_again_after_the_end_held_leaves_a_workflow_enabled_since(self):
+        # The one-off ended in full; someone enabled its workflow again, as the summary says, to run it by hand; then its Finish is run again.
+        spec = self.make()
+        run, finish, summary = self.job(spec, "1", "x")
+        self.assertEqual(self.wf_state(), "disabled_manually")
+        w = self.world()
+        w["repos"][REPO]["workflows"]["nightly.yml"] = "active"
+        self.world(w)
+        args = ["--name", spec["name"], "--project", str(self.project), "--profile", spec["profile"], "--model", spec["model"], "--effort", spec["effort"], "--timeout", str(spec["timeout"]), "--at", spec["at"], "--timezone", spec["timezone"], "--workflow", "nightly.yml", "--definition", spec["definition"]]
+        again = self.cli("__scheduled", "finish", *args, "--job", "1-1", env={"DELEGATE_TEST_NOW": str(AFTER + 600)}, timeout=120)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn('"finished_before": true', again.stdout)
+        self.assertEqual(self.wf_state(), "active", "an end that already held is not done again")
 
     def test_a_failed_disable_names_the_command(self):
         spec = self.make()

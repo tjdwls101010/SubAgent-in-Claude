@@ -170,7 +170,9 @@ def unfinished_one_offs(registry, repo):
                     states = workflow_states(repo)
                 except GitHubError:
                     states = {}
-            if any(v == "active" for f, v in states.items() if f in (f"{name}.yml", f"claude-{name}.yml")):
+            # The file the end recorded; an end recorded before it did names none, and the schedule's file is one of the two.
+            files = (rec["one_off_end"]["workflow"],) if rec["one_off_end"].get("workflow") else (f"{name}.yml", f"claude-{name}.yml")
+            if any(v == "active" for f, v in states.items() if f in files):
                 why.append("its workflow is still enabled")
         if agent_state(dispatcher_label(repo, name)) != "missing":
             why.append("its dispatcher is still on this Mac")
