@@ -467,3 +467,11 @@ class MoveReview(MoveWorld):
         (self.runs_dir() / ".migration" / "backup" / f"{OLD_PREFIX}nightly.plist").unlink()
         out = self.job("rollback", "--only", "nightly", expect=1)
         self.assertIn("backup", out["results"][0]["error"])
+
+    def test_verify_reads_the_whole_workflow_not_only_its_spec(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        broken = "\n".join(l for l in self.committed("nightly").splitlines() if not l.lstrip().startswith("run: ")) + "\n"
+        self.plant("nightly.yml", broken)
+        check = self.job("verify", expect=None)
+        self.assertTrue(any(p.startswith("nightly:") for p in check["problems"]), check["problems"])
