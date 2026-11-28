@@ -41,7 +41,7 @@ def pending(run_dir):
 
 
 def take(run_dir, deliver, lines_read):
-    """Hand every queued message not yet handed, oldest first, to `deliver(message)` (which queues it for writing to stdin) and record `after_line`; `lines_read()` is the stdout line count at that moment. A message stays in the inbox until `confirm` says it is written. Returns the messages handed."""
+    """Hand every queued message not yet handed, oldest first — a payload with no entry in meta, left by a sender that died mid-enqueue, is discarded — to `deliver(message)` (which queues it for writing to stdin) and record `after_line`; `lines_read()` is the stdout line count at that moment. A message stays in the inbox until `confirm` says it is written. Returns the messages handed."""
     with run_lock(run_dir):
         files = pending(run_dir)
         if not files:
@@ -55,12 +55,15 @@ def take(run_dir, deliver, lines_read):
                 f.unlink(missing_ok=True)
                 continue
             entry = next((m for m in meta.setdefault("messages", []) if m.get("uuid") == msg["uuid"]), None)
-            if entry is not None and entry.get("after_line") is not None:
+            if entry is None:
+                # Its sender died between writing the payload and recording it, both under this lock: the message was never accepted.
+                f.unlink(missing_ok=True)
+                continue
+            if entry.get("after_line") is not None:
                 continue
             at = lines_read()
             deliver(msg)
-            if entry is not None:
-                entry["after_line"] = at
+            entry["after_line"] = at
             delivered.append(msg)
         write_json(meta_path(run_dir), meta)
         return delivered
