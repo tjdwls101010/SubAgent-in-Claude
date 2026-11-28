@@ -497,6 +497,8 @@ class MoveReview(MoveWorld):
 
 
 class MoveRepairReview(MoveWorld):
+    run_one_off = MoveReview.run_one_off
+
     """What the GPT review of the move's repairs found, each reproduced at the job's command line: a resume that says done before its slot runs, a rollback that undoes or overwrites what it should leave alone, a one-off left on, a stale inventory, a recovery the error message cannot lead to, and another repository's dispatcher taken."""
 
     def test_the_first_resume_that_dispatches_a_slot_is_not_done(self):
@@ -531,3 +533,14 @@ class MoveRepairReview(MoveWorld):
         out = self.job("rollback", "--only", "nightly", expect=1)
         self.assertEqual(out["results"][0]["status"], "failed")
         self.assertEqual(self.committed("nightly"), edited, "the change made meanwhile is kept")
+
+    def test_a_one_off_completed_on_the_new_side_is_finished_after_a_rollback(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        when = int(datetime(2026, 12, 1, 6, 1, tzinfo=ZoneInfo(TZ)).timestamp())
+        self.run_one_off("later", when, "8")
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually")
+        self.job("rollback", "--only", "later", now=when + 3600)
+        # Moved again: its time passed, it is off, and a worker completed its slot — on this skill's side, which the old record now holds.
+        inv = {r.get("name"): r for r in self.job("inventory", now=when + 7200)["schedules"]}
+        self.assertEqual(inv["later"]["class"], "finished", inv["later"])

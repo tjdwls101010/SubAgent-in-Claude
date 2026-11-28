@@ -299,7 +299,8 @@ def rollback(j: Journal, row, ctx):
             continue
         changed.append(key)
     if changed:
-        old.setdefault("jobs", {}).update({job: {**rec, "moved_back": True} for job, rec in (new.get("jobs") or {}).items() if not rec.get("legacy")})
+        # Each with how its run ended: its meta stays in this skill's registry, where nothing reading the old record looks.
+        old.setdefault("jobs", {}).update({job: {**rec, "moved_back": True, "moved_back_run_state": _run_state(ctx["registry"], rec.get("run_id"))} for job, rec in (new.get("jobs") or {}).items() if not rec.get("legacy")})
         old["last_slot"] = max([int(k) for k in slots] or [0]) or None
         old_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = old_path.with_suffix(".tmp")

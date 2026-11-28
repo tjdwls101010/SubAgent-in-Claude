@@ -42,11 +42,11 @@ def old_run_state(project, run_id):
 
 
 def completed_slot(project, state, slot):
-    """The job that completed `slot` by the old records — the slot's job or its retry, whose run's meta says completed — or None."""
+    """The job that completed `slot` by the old records — the slot's job or its retry, whose run's meta says completed, or for a job a rollback moved back from this skill, the run state it recorded — or None."""
     claim = ((state or {}).get("slots") or {}).get(str(int(slot))) or {}
     for job in (claim.get("retried"), claim.get("job")):
         rec = ((state or {}).get("jobs") or {}).get(job or "") or {}
-        if rec.get("run_id") and old_run_state(project, rec["run_id"]) == "completed":
+        if rec.get("run_id") and (rec.get("moved_back_run_state") if rec.get("moved_back") else old_run_state(project, rec["run_id"])) == "completed":
             return {"job": job, "run_id": rec["run_id"]}
     return None
 
