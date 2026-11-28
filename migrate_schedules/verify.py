@@ -1,4 +1,4 @@
-"""The transition's completion checks (step 5 ①–③) for one repository, read from GitHub and this Mac now: every schedule the inventory listed is accounted for — moved and running the new command in its expected state with its dispatcher loaded, deleted, or held — and no workflow on the default branch and no LaunchAgent still runs the old skill."""
+"""The transition's completion checks (step 5 ①–③, ⑥ and ⑧) for one repository, read from GitHub and this Mac now: every schedule the inventory listed is accounted for — moved and running the new command in its expected state with its dispatcher loaded and every slot it dispatched claimed, deleted, or held and not active on the old command — and no workflow on the default branch and no LaunchAgent still runs the old skill."""
 
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ def verify(j, ctx):
         name = row.get("name")
         if row["class"] == "held" or not name:
             rows.append({"name": name, "file": row["file"], "disposition": "held", "why": row.get("why")})
+            text = files.get(row["file"]) or ""
+            # Held is left as it is, but an active one still fires the old command: the old skill cannot go while it does (step 5 ⑧).
+            if states.get(row["file"]) == "active" and (written_by_legacy(text) or OLD_CLI in text):
+                problems.append(f"{row['file']}: held ({row.get('why')}) and still active with the claude skill's command; disable it, or decide what it becomes, before the old skill goes")
             continue
         if row["class"] == "finished":
             ok = row["file"] not in files and agent_state(dispatcher_label(ctx["repo"], name)) == "missing"

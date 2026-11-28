@@ -118,8 +118,8 @@ class Move(MoveWorld):
         self.assertEqual([(c["argv"][2], [a for a in c["argv"] if a.startswith("slot=")]) for c in dispatched], [("nightly.yml", [f"slot={ts(18, 3)}"])], "the missed slot is dispatched as itself")
         # The recovery's run claims its slot, as its Run step does.
         registry.claim_slot(str(self.runs_dir()), "nightly", ts(18, 3), "44000000001-1", {"trigger": "recovery", "profile": "full"}, exact=True)
-        check = self.job("verify", now=later)
-        self.assertEqual(check["problems"], [])
+        check = self.job("verify", now=later, expect=1)
+        self.assertEqual([p.split(":")[0] for p in check["problems"]], ["stuck.yml"], "the held one is still active on the old command")
         held = [r for r in check["schedules"] if r["disposition"] == "held"]
         self.assertEqual([(r["name"], "still enabled" in r["why"]) for r in held], [("stuck", True)], "a held schedule is listed as the exception it is")
 
@@ -475,3 +475,14 @@ class MoveReview(MoveWorld):
         self.plant("nightly.yml", broken)
         check = self.job("verify", expect=None)
         self.assertTrue(any(p.startswith("nightly:") for p in check["problems"]), check["problems"])
+
+    def test_verify_fails_while_a_held_workflow_still_runs_the_old_skill(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        check = self.job("verify", expect=1)
+        self.assertEqual([p.split(":")[0] for p in check["problems"]], ["stuck.yml"], check["problems"])
+        self.assertEqual([r["name"] for r in check["schedules"] if r["disposition"] == "held"], ["stuck"], "it is still listed as the exception it is")
+        w = self.world()
+        w["repos"][REPO]["workflows"]["stuck.yml"] = "disabled_manually"
+        self.world(w)
+        self.assertEqual(self.job("verify")["problems"], [], "switched off, it waits for a decision without firing the old command")
