@@ -450,3 +450,20 @@ class MoveReview(MoveWorld):
             self.job(step, "--only", "nightly", now=later)
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]], "the slot missed since the first freeze unloaded it")
+
+    def test_a_rollback_that_stopped_after_loading_the_old_dispatcher_finishes(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        path = self.runs_dir() / ".migration" / "journal.json"
+        before = path.read_text()
+        self.job("rollback", "--only", "nightly")
+        path.write_text(before)  # as if it stopped right after launchd loaded the old dispatcher
+        self.assertEqual(self.job("rollback", "--only", "nightly")["results"][0]["status"], "done")
+        self.assertTrue(self.plist(OLD_PREFIX + "nightly"))
+
+    def test_a_rollback_without_the_old_dispatchers_backup_is_not_done(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        (self.runs_dir() / ".migration" / "backup" / f"{OLD_PREFIX}nightly.plist").unlink()
+        out = self.job("rollback", "--only", "nightly", expect=1)
+        self.assertIn("backup", out["results"][0]["error"])
