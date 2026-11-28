@@ -320,3 +320,25 @@ class MoveReview(MoveWorld):
         self.job("rollback", "--only", "later", now=when + 3600)
         self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", "its slot ran: back on the old side it stays off")
         self.assertIsNone(self.plist(OLD_PREFIX + "later"))
+
+    def test_a_rollback_hands_back_every_claim_and_retry(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        runs = str(self.runs_dir())
+        at = int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())
+        # `later` never ran on the old side, so it has no old record; the new side claims its slot (its read-only worker then failed, so the slot keeps its one retry).
+        registry.claim_slot(runs, "later", at, "9-1", {"trigger": "dispatcher", "profile": "read-only"})
+        # The new side retried the old side's 03:00 slot of `nightly`.
+        old_slot = ts(17, 3)
+        registry.update_job(runs, "nightly", "9-2", {"trigger": "dispatcher", "profile": "read-only", "slot": old_slot, "retry_of": "1-1"})
+        state_path = self.runs_dir() / ".schedules" / "nightly" / "state.json"
+        state = json.loads(state_path.read_text())
+        state["slots"][str(old_slot)]["retried"] = "9-2"
+        state_path.write_text(json.dumps(state))
+        self.job("rollback", "--only", "later", "--only", "nightly", now=at + 3600)
+        old = self.project / ".claude-runs" / ".schedules"
+        later = json.loads((old / "later" / "state.json").read_text())
+        self.assertEqual(later["slots"][str(at)]["job"], "9-1", "the old side will not run the slot again as its first")
+        self.assertEqual(later["definition"], "d0d0d0d0", "and its Finish still knows the workflow as its own")
+        nightly = json.loads((old / "nightly" / "state.json").read_text())
+        self.assertEqual(nightly["slots"][str(old_slot)], {"job": "1-1", "retried": "9-2"}, "the slot's one retry is spent")
