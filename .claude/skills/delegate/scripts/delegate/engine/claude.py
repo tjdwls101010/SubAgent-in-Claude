@@ -611,7 +611,7 @@ def quota_from_event(rl, at=None):
     """A `rate_limit_event` a run recorded, as the same shape: the account's state when the event came."""
     at = at or now()
     rejected = rl.get("status") == "rejected" and (rl.get("resets_at") or 0) > at
-    windows = [{"kind": k, "used_percent": round(rl[k] * 100) if isinstance(rl.get(k), (int, float)) else None} for k in ("five_hour", "seven_day")]
+    windows = [{"kind": k, "used_percent": round(rl[k] * 100) if isinstance(rl.get(k), (int, float)) else None, "resets_at": rl.get(f"{k}_resets_at")} for k in ("five_hour", "seven_day")]
     out = {"state": "exhausted" if rejected else "ok", "scope": "the account's limits", "windows": windows, "observed_at": rl.get("observed_at"), "source": "a run's rate_limit_event"}
     if rejected:
         out["resets_at"] = rl.get("resets_at")

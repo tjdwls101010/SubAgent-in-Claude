@@ -206,7 +206,7 @@ class StreamState:
         elif t == "rate_limit_event":
             info = e.get("rate_limit_info") or {}
             windows = info.get("unifiedWindows") or {}
-            rl = {"status": info.get("status"), "five_hour": (windows.get("five_hour") or {}).get("utilization"), "seven_day": (windows.get("seven_day") or {}).get("utilization"), "resets_at": info.get("resetsAt"), "type": info.get("rateLimitType")}
+            rl = {"status": info.get("status"), "five_hour": (windows.get("five_hour") or {}).get("utilization"), "seven_day": (windows.get("seven_day") or {}).get("utilization"), "five_hour_resets_at": (windows.get("five_hour") or {}).get("resetsAt"), "seven_day_resets_at": (windows.get("seven_day") or {}).get("resetsAt"), "resets_at": info.get("resetsAt"), "type": info.get("rateLimitType")}
             if self.rate_limit is None or self.rate_limit["status"] != rl["status"]:
                 self.lines.append((i, "ratelimit", rl))
             self.rate_limit = rl

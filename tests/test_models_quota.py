@@ -250,6 +250,14 @@ class ClaudeLimit(Sandbox):
         refused = self.cli_json("start", *CLAUDE_RUN, "again", expect=1)
         self.assertEqual((refused["error"], refused["source"]), ("quota_exhausted", "a run's rate_limit_event"), "a fresh event of this registry is read before /usage")
 
+    def test_a_runs_event_reports_each_window_with_its_reset(self):
+        out = self.start("x")
+        self.assertEqual(self.wait_state(out["run_id"])["state"], "completed")
+        q = self.cli_json("models", "--engine", "claude", timeout=120)["engines"]["claude"]["quota"]
+        self.assertEqual(q["source"], "a run's rate_limit_event")
+        # The captured event's unifiedWindows (basic_write.jsonl): five_hour 0.02 until 1793418000, seven_day 0.42 until 1793703600.
+        self.assertEqual([(w["kind"], w["used_percent"], w.get("resets_at")) for w in q["windows"]], [("five_hour", 2, 1793418000), ("seven_day", 42, 1793703600)])
+
     def test_another_accounts_rejection_leaves_the_answer_to_usage(self):
         out = self.start("x [[fake:ratelimit:rejected]] [[fake:error]]")
         self.assertEqual(self.wait_state(out["run_id"])["state"], "quota_exhausted")
