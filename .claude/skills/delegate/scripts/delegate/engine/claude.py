@@ -461,6 +461,11 @@ class Driver:
         fields.update({"state": state, "error": error})
         with self.pump.lock:
             rl = self.state.rate_limit
+        if rl is not None and rl != self.rate_limit:
+            # The event can come between two polls with the exit right after it; the next start reads it from here, as `tick` would have recorded it.
+            fields["rate_limit"] = {**rl, "observed_at": now()}
+            if not self.account_read:
+                fields["account"] = login_account()
         if state == "failed" and rl and rl.get("status") == "rejected":
             # The account's limit, not the work.
             fields.update({"state": "quota_exhausted", "resets_at": rl.get("resets_at")})
