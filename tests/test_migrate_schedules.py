@@ -248,3 +248,16 @@ class MoveSafety(MoveWorld):
         self.through("freeze", "state", "publish")
         check = self.job("verify", expect=1)
         self.assertTrue(any("nightly: the move stopped" in p for p in check["problems"]), check["problems"])
+
+
+class MoveReview(MoveWorld):
+    """What the PR⑧ GPT review found the move could still get wrong, each reproduced at the job's command line: a slot lost, run twice or left unclaimed, a schedule left disabled or without its dispatcher, or a `verify` or `rollback` that says ok when it is not."""
+
+    def test_a_slot_that_passes_while_resume_runs_is_recovered(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        # Resume starts a second before the next 03:00 and, a gh call at a time, installs the dispatcher after it: neither the dispatcher nor the recovery covers that slot unless the recovery reaches up to the install.
+        self.world(slow=1)
+        self.job("resume", now=ts(18, 3) - 1)
+        dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
+        self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]])
