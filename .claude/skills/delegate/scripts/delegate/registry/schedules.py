@@ -130,6 +130,8 @@ def slot_unfilled(registry, name, slot):
 def _legacy_claim(state, name, slot, exact):
     """For a schedule taken over from the `claude` skill: what its registry says of `slot` when this one holds no job for it — a job its command queued before the takeover may have filled it since, and a slot its record pruned may still have run (its runs' origins say). The claim found, its jobs and the old latest slot are merged into `state`; returns the claim, or None. The old registry is only read."""
     legacy = state["legacy_registry"]
+    if not Path(legacy).is_dir():  # removed or moved since the takeover: nothing to read, and taking its lock would make the directory again
+        return None
     with locked(Path(legacy) / ".locks" / f"schedule-{name}.lock"):
         old = read_json(Path(legacy) / ".schedules" / name / "state.json") or {}
     if old.get("last_slot") is not None:
@@ -249,6 +251,8 @@ def take_over_legacy_state(registry, name, legacy_registry):
 def release_legacy_definition(name, legacy_registry):
     """Clear the definition the `claude` skill recorded of schedule `name`, under that skill's lock, so a job its command still runs leaves alone, at its end, whatever is scheduled under the name next. Returns whether there was one to clear."""
     old_path = Path(legacy_registry) / ".schedules" / name / "state.json"
+    if not old_path.exists():  # the old skill never recorded it: no definition to clear, and taking its lock would make its registry here
+        return False
     with locked(Path(legacy_registry) / ".locks" / f"schedule-{name}.lock"):
         old = read_json(old_path)
         if not old or old.get("definition") is None:

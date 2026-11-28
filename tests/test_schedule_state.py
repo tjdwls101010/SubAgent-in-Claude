@@ -190,6 +190,30 @@ class TakenOver(unittest.TestCase):
         self.take_over()
         self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry(), exact=True)["decision"], "skip")
 
+    def test_a_recovery_of_an_old_failed_slot_this_record_pruned_is_retried_once(self):
+        # The old record still holds a failed read-only 03:00; this record has pruned it. Its recovery is the one retry, refused before a worker: a second recovery is not another retry.
+        registry.claim_slot(self.old, "nightly", S3, "1-1", self.entry("read-only"))
+        self.old_run("1-1", S3, state="failed")
+        self.take_over()
+        for n in range(1, 61):
+            registry.claim_slot(self.reg, "nightly", S3 + n * 300, f"{n + 1}-1", self.entry())
+        self.assertNotIn(str(S3), registry.schedule_state(self.reg, "nightly")["slots"])
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry("read-only"), exact=True)["decision"], "retry")
+        registry.update_job(self.reg, "nightly", "r-1", {"outcome": {"kind": "refused", "error": "no commit"}})
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-2", self.entry("read-only"), exact=True)["decision"], "skip")
+
+    def test_an_old_registry_removed_after_the_takeover_is_not_made_again(self):
+        registry.claim_slot(self.old, "nightly", S3, "1-1", self.entry())
+        self.take_over()
+        shutil.rmtree(self.old)
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S4, "2-1", self.entry())["decision"], "first")
+        self.assertFalse(Path(self.old).exists(), "a claim reads the old registry and never creates it")
+
+    def test_releasing_an_old_definition_where_the_old_skill_never_ran_creates_nothing(self):
+        absent = Path(self.old) / "never"
+        self.assertFalse(registry.release_legacy_definition("nightly", absent))
+        self.assertFalse(absent.exists())
+
 
 class Removal(unittest.TestCase):
     """A state directory is deleted for the schedule whose name its state.json records, to the letter: on a file system that ignores case, `Nightly` and `nightly` are one directory."""
