@@ -375,7 +375,8 @@ def quota_view(obs, source, observed_at, at=None):
         exhausted = obs.get("allowed") is False
         state = "exhausted" if exhausted else ("ok" if obs.get("allowed") else "unknown")
     else:
-        exhausted = bool(full)
+        # A rollout carries no verdict: a full window is one only when the event says no credits pay past it.
+        exhausted = bool(full) and obs.get("credits_left") is False
         state = "exhausted" if exhausted else ("ok" if windows else "unknown")
     out = {"state": state, "scope": f"ordinary usage (limit {obs.get('limit_id')})", "windows": windows, "observed_at": observed_at, "source": source, "plan": obs.get("plan")}
     if exhausted:

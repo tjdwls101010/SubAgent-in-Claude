@@ -138,6 +138,28 @@ class CodexLimit(Sandbox):
         q = self.cli_json("models", "--engine", "codex", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})["engines"]["codex"]["quota"]
         self.assertEqual([(w["kind"], w["used_percent"]) for w in q["windows"]], [("5h", 100.0), ("7d", 44.0)])
 
+    def test_a_rollout_of_another_bucket_says_nothing_of_ordinary_use(self):
+        ordinary = self.fresh_rollout(age=60)
+        ordinary["payload"]["rate_limits"]["primary"]["used_percent"] = 12.0
+        other = self.fresh_rollout()
+        other["payload"]["rate_limits"]["limit_id"] = "premium"
+        rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "28"
+        rollouts.mkdir(parents=True)
+        (rollouts / "rollout-2026-11-28T01-47-16-x.jsonl").write_text(json.dumps(ordinary) + "\n" + json.dumps(other) + "\n")
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})
+        self.wait_state(out["run_id"])
+        q = self.cli_json("models", "--engine", "codex", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})["engines"]["codex"]["quota"]
+        self.assertEqual([(w["kind"], w["used_percent"]) for w in q["windows"]], [("5h", 12.0), ("7d", 44.0)], "the ordinary bucket's own reading")
+
+    def test_a_full_rollout_window_that_credits_pay_past_refuses_nothing(self):
+        event = self.fresh_rollout()
+        event["payload"]["rate_limits"]["credits"]["has_credits"] = True
+        rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "28"
+        rollouts.mkdir(parents=True)
+        (rollouts / "rollout-2026-11-28T01-47-16-x.jsonl").write_text(json.dumps(event) + "\n")
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})
+        self.wait_state(out["run_id"])
+
     def test_a_turn_the_limit_ends_is_quota_exhausted_with_the_way_over(self):
         out = self.codex("start", "x", env={"FAKE_CODEX_FIXTURE": str(CODEX_FIXTURES / "usage-limit.jsonl"), "FAKE_CODEX_EXIT": "1"})
         row = self.wait_state(out["run_id"])
