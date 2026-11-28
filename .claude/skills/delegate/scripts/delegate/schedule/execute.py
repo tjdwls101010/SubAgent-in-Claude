@@ -410,6 +410,9 @@ def _end_one_off(spec, ctx, registry, rec, state):
     outcome = (rec.get("outcome") or {}).get("kind")
     if (rec.get("outcome") or {}).get("early"):
         return [], []
+    if rec.get("trigger") == "recovery" and rec.get("slot") is None:
+        # A recovery refused for the slot it named claimed no slot, so the one-off's own time is still to come.
+        return [], []
     not_completed = state in NOT_COMPLETED or outcome == "refused"
     if not_completed and rec.get("profile") == "read-only" and not rec.get("retry_of"):
         return ["This one-off's run did not complete; the next automatic trigger for its time retries it once, and that run turns the schedule off."], []

@@ -1084,6 +1084,15 @@ class OneOff(Scheduling):
         self.assertEqual(self.wf_state(), "disabled_manually")
         self.assertIsNone(self.plist())
 
+    def test_a_recovery_naming_a_time_that_has_not_come_leaves_the_one_off(self):
+        # Dispatched with its own slot two minutes early: refused before anything is claimed, so its time still comes.
+        spec = self.make(profile="write")
+        run, finish, summary = self.job(spec, "1", "x", now=AFTER - 180, extra={"DELEGATE_SCHEDULE_SLOT": str(AFTER - 60)})
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertIn("has not come", run.stdout)
+        self.assertEqual(self.wf_state(), "active")
+        self.assertIsNotNone(self.plist())
+
     def test_finish_run_again_completes_only_the_end(self):
         spec = self.make()
         self.world(fail_disable=True)
