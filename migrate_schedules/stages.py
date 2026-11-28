@@ -170,8 +170,10 @@ def filled_slots(row, ctx):
 def resume(j: Journal, row, ctx):
     """3-6: once the workflow is published under this skill, it is put back in its expected state — confirmed on GitHub — and only then this skill's dispatcher installed; the slots that passed while it was frozen and that neither side filled are dispatched with their own slot, through the same claim as any trigger."""
     name, s = row["name"], j.of(row["name"])
-    if row["class"] == "finished" or s.get("resumed"):
+    if row["class"] == "finished":
         return
+    if s.get("resumed"):
+        return _recover_again(row, ctx, s)
     missing = [step for step, key in (("freeze", "drained"), ("state", "state_moved"), ("publish", "published")) if not s.get(key)]
     if missing:
         raise RuntimeError(f"{name}: run {', '.join(missing)} first; resuming before would start the old command under the new dispatcher")
@@ -197,6 +199,25 @@ def resume(j: Journal, row, ctx):
     else:
         set_workflow_enabled(ctx["repo"], row["file"], False)
         j.update(name, resumed=True, resumed_state=want)
+
+
+def unclaimed(row, ctx, s):
+    """The slots resume dispatched that no run has claimed yet: a dispatch GitHub took is not a slot run until its run claims it."""
+    filled = filled_slots(row, ctx)
+    return [k for k in s.get("recovered") or [] if k not in filled]
+
+
+def _recover_again(row, ctx, s):
+    """A resume run again: each dispatched slot still unclaimed is waited for while a run of the workflow is on its way, and dispatched again once none is — a second dispatch of a slot already claimed is skipped by its exact claim."""
+    open_ = unclaimed(row, ctx, s)
+    if not open_:
+        return None
+    pending = unfinished_runs(ctx["repo"], row["file"])
+    if pending:
+        raise NotYet(f"{row['name']}: slot(s) {', '.join(open_)} were dispatched and are not claimed yet; {len(pending)} run(s) of its workflow are not finished")
+    for key in open_:
+        dispatch_workflow(ctx["repo"], row["file"], ctx["branch"], {"source": "dispatcher", "slot": key})
+    return {"dispatched_again": open_}
 
 
 def rollback(j: Journal, row, ctx):

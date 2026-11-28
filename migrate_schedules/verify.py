@@ -7,7 +7,7 @@ from delegate.launchd import agent_state, agents_dir
 from delegate.registry import schedule_state
 from delegate.schedule import dispatcher_label, legacy_dispatcher_label
 
-from .stages import expected
+from .stages import expected, unclaimed
 
 OLD_CLI = "skills/claude/scripts/cli.py"
 
@@ -37,9 +37,10 @@ def verify(j, ctx):
             "state": states.get(row["file"]) == ("active" if want == "active" else "disabled_manually"),
             "definition": bool(spec) and spec.get("definition") == (schedule_state(ctx["registry"], name) or {}).get("definition"),
             "dispatcher": agent_state(dispatcher_label(ctx["repo"], name)) == ("loaded" if want == "active" else "missing"),
+            "recovered": not unclaimed(row, ctx, j.of(name)),
         }
         rows.append({"name": name, "disposition": "moved", "expected": want, "checks": checks, "ok": all(checks.values())})
-        problems += [f"{name}: {k}" for k, v in checks.items() if not v]
+        problems += [f"{name}: {k}" + (f" (slot(s) {', '.join(unclaimed(row, ctx, j.of(name)))} dispatched, not claimed; run resume again)" if k == "recovered" else "") for k, v in checks.items() if not v]
     held_files = {r["file"] for r in rows if r["disposition"] == "held"}
     still_old = sorted(f for f, t in files.items() if t and f not in held_files and (written_by_legacy(t) or OLD_CLI in t))
     problems += [f"{f}: still runs the claude skill" for f in still_old]
