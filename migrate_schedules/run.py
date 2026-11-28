@@ -44,7 +44,10 @@ def context(args):
     if not repo:
         raise SystemExit(f"{project} has no GitHub remote named origin")
     facts = repo_facts(repo)
-    return {"project": project, "repo": facts["full_name"] or repo, "branch": facts["default_branch"], "registry": resolve_runs_dir(project), "cli": args.cli, "now": float(args.now) if args.now else time.time()}
+    # The job's clock: `--now` sets where it starts, and it moves on as the command runs, as time does.
+    start, base = time.monotonic(), float(args.now) if args.now else None
+    clock = (lambda: base + time.monotonic() - start) if base is not None else time.time
+    return {"project": project, "repo": facts["full_name"] or repo, "branch": facts["default_branch"], "registry": resolve_runs_dir(project), "cli": args.cli, "now": clock(), "clock": clock}
 
 
 def main(argv=None):

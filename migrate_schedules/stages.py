@@ -186,8 +186,9 @@ def resume(j: Journal, row, ctx):
         if got["status"] != "installed":
             raise NotYet(f"{name}: the dispatcher was not installed: {got.get('error')}")
         j.update(name, new_dispatcher=True)
-        filled = filled_slots(row, ctx)
-        for slot in missed_slots(spec, s.get("frozen_at") or ctx["now"], ctx["now"]):
+        # The slots up to now, after the install: one whose time came while this command ran reached neither the frozen side nor a dispatcher loaded after it.
+        filled, until = filled_slots(row, ctx), ctx["clock"]()
+        for slot in missed_slots(spec, s.get("frozen_at") or ctx["now"], until):
             key = str(int(slot))
             if key not in filled and key not in (j.of(name).get("recovered") or []):
                 dispatch_workflow(ctx["repo"], row["file"], ctx["branch"], {"source": "dispatcher", "slot": key})
@@ -249,7 +250,7 @@ def rollback(j: Journal, row, ctx):
                 spec = None
         if spec:
             filled = filled_slots(row, ctx)
-            missed = [str(int(t)) for t in missed_slots(spec, s["frozen_at"], ctx["now"]) if str(int(t)) not in filled]
+            missed = [str(int(t)) for t in missed_slots(spec, s["frozen_at"], ctx["clock"]()) if str(int(t)) not in filled]
             if missed:
                 note["missed_slots"] = missed
     j.data["schedules"][name] = {"rolled_back": True, "rolled_back_at": ctx["now"], "rollback_note": note}
