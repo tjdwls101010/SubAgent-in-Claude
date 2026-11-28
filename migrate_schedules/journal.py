@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
 
 from delegate.registry import ensure_runs_dir
+
+
+@contextlib.contextmanager
+def held(registry):
+    """The move's lock, held by one step from reading the journal to its last write: two steps at once, even on different schedules, would each write back the journal as they read it and erase what the other recorded. A second step waits for the first."""
+    ensure_runs_dir(str(registry))
+    d = Path(registry) / ".migration"
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / "lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
 
 
 class Journal:
