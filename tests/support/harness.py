@@ -24,6 +24,9 @@ SKILL_DIR = REPO / ".claude" / "skills" / "delegate"
 # The one place the entry point is named. DELEGATE_TEST_ENTRY points the suite at another copy of the scripts, which is how a deliberately broken engine is shown to turn tests red without touching the real one.
 ENTRY = Path(os.environ.get("DELEGATE_TEST_ENTRY") or SKILL_DIR / "scripts" / "cli.py")
 SCRIPTS = ENTRY.parent
+# A suite run from inside a worker (a reviewer running the tests) inherits the marker that makes the skill refuse to start, steer, stop or clean workers, and the tests that call the skill in this process would fail on it; a test of that refusal sets the marker itself.
+for _marker in ("DELEGATE_RUN", "CLAUDE_SKILL_RUN"):
+    os.environ.pop(_marker, None)
 SUPPORT = Path(__file__).resolve().parent
 FAKE_DIR = SUPPORT / "fake_claude"
 FAKE_CODEX_DIR = SUPPORT / "fake_codex"
