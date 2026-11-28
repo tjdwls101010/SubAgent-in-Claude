@@ -1,4 +1,4 @@
-# Contributing to SubAgent in Claude
+# Contributing to Agentic Delegate
 
 This project is a Claude Code plugin (`delegate`) holding one skill, `delegate`, backed by a Python standard-library CLI run with `uv run`. Bug fixes, tests and documentation are welcome; please open an issue before adding a runtime dependency or a new command, since the CLI is deliberately stdlib-only and its surface small.
 

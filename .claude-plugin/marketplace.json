@@ -1,5 +1,5 @@
 {
-  "name": "subagent-in-claude",
+  "name": "agentic-delegate",
   "owner": {"name": "tjdwls101010", "url": "https://github.com/tjdwls101010"},
   "metadata": {"description": "The delegate plugin: GPT and Claude workers as managed subagents in Claude Code."},
   "plugins": [
