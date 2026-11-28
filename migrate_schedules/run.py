@@ -9,7 +9,7 @@ Steps, each run with the same --project, each repeatable (what is done is skippe
     rollback    back to the claude skill, schedule by schedule
     verify      the transition's checks: every inventoried schedule accounted for, no workflow or dispatcher left that runs the old skill
 
---only NAME limits a step to those schedules (repeatable). Exit codes: 0 done; 1 a step failed (the journal keeps what was done); 3 a step must wait (a queue still draining) — run it again.
+--only NAME limits a step to those schedules (repeatable). A step started while another runs waits for it. Exit codes: 0 done; 1 a step failed (the journal keeps what was done); 3 a step must wait (a queue still draining) — run it again.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from delegate.github import repo_facts, repo_from_remote  # noqa: E402
 from delegate.registry import resolve_runs_dir  # noqa: E402
 
 from migrate_schedules.inventory import inventory  # noqa: E402
-from migrate_schedules.journal import Journal  # noqa: E402
+from migrate_schedules.journal import Journal, held  # noqa: E402
 from migrate_schedules.stages import NotYet, freeze, move_state, publish, resume, rollback  # noqa: E402
 from migrate_schedules.verify import verify  # noqa: E402
 
@@ -59,7 +59,11 @@ def main(argv=None):
     p.add_argument("--now", help=argparse.SUPPRESS)
     args = p.parse_args(argv)
     ctx = context(args)
-    j = Journal(ctx["registry"])
+    with held(ctx["registry"]):
+        return _step(args, ctx, Journal(ctx["registry"]))
+
+
+def _step(args, ctx, j):
     if args.step == "inventory":
         moving = sorted(n for n, s in j.data["schedules"].items() if s and not s.get("rolled_back"))
         if moving:

@@ -362,3 +362,19 @@ class MoveReview(MoveWorld):
         self.assertEqual(self.committed("done"), self.legacy_text("done", at="2026-11-16T06:00"))
         self.assertEqual(self.repo()["workflows"]["done.yml"], "disabled_manually")
         self.assertIsNone(self.plist(OLD_PREFIX + "done"), "a finished one-off gets no dispatcher back")
+
+    def test_two_steps_at_once_keep_each_others_journal(self):
+        self.job("inventory")
+        self.through("freeze", "state")
+        self.world(slow=0.5)
+        procs = []
+        for name in ("nightly", "later"):
+            procs.append(subprocess.Popen([sys.executable, str(JOB), "publish", "--project", str(self.project), "--cli", str(ENTRY), "--now", str(T0), "--only", name], cwd=self.project, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+        for p in procs:
+            p.communicate(timeout=300)
+        self.world(slow=0)
+        journal = json.loads((self.runs_dir() / ".migration" / "journal.json").read_text())["schedules"]
+        for name in ("nightly", "later"):
+            if self.committed(name).startswith("# Written by the delegate skill's"):
+                self.assertTrue((journal[name].get("published") or {}).get("old_text"), f"{name} was rewritten on GitHub, and the journal must keep how to undo it")
+        self.assertTrue(all(p.returncode == 0 for p in procs), [p.returncode for p in procs])
