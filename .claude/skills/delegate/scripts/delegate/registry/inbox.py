@@ -1,6 +1,6 @@
-"""The queue between `send` and a run's supervisor. Putting a message in, the supervisor taking messages out to write them to stdin, and closing stdin all happen under the run's lock, so a message put in is either delivered or still in the inbox when the supervisor dies — never dropped by a close.
+"""The queue between `send` and a run's supervisor. Putting a message in, the supervisor taking messages out to write them to stdin, confirming each once written, and closing stdin all happen under the run's lock, so a message put in is either delivered or still in the inbox when the supervisor dies — never dropped by a close.
 
-The run's meta carries `stdin_open` and the `messages` list (one entry per message: uuid, head, priority, kind, and once delivered `delivered_at` and `after_line`, the number of stdout lines read when it was written).
+The run's meta carries `stdin_open` and the `messages` list (one entry per message: uuid, head, priority, kind, `after_line` once handed to the writer — the number of stdout lines read when its write began — and `delivered_at` once all of it is written to stdin).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def pending(run_dir):
 
 
 def take(run_dir, deliver, lines_read):
-    """Hand every queued message, oldest first, to `deliver(message)` (which writes it to stdin) and record its delivery. `lines_read()` is the stdout line count at the moment of writing. Returns the messages delivered."""
+    """Hand every queued message not yet handed, oldest first, to `deliver(message)` (which queues it for writing to stdin) and record `after_line`; `lines_read()` is the stdout line count at that moment. A message stays in the inbox until `confirm` says it is written. Returns the messages handed."""
     with run_lock(run_dir):
         files = pending(run_dir)
         if not files:
@@ -54,16 +54,28 @@ def take(run_dir, deliver, lines_read):
             except (OSError, ValueError):
                 f.unlink(missing_ok=True)
                 continue
+            entry = next((m for m in meta.setdefault("messages", []) if m.get("uuid") == msg["uuid"]), None)
+            if entry is not None and entry.get("after_line") is not None:
+                continue
             at = lines_read()
             deliver(msg)
-            f.unlink(missing_ok=True)
-            for m in meta.setdefault("messages", []):
-                if m.get("uuid") == msg["uuid"]:
-                    m["delivered_at"] = now()
-                    m["after_line"] = at
+            if entry is not None:
+                entry["after_line"] = at
             delivered.append(msg)
         write_json(meta_path(run_dir), meta)
         return delivered
+
+
+def confirm(run_dir, uuid):
+    """Record that the message `uuid` is written to stdin in full: its `delivered_at`, and its payload gone from the inbox."""
+    with run_lock(run_dir):
+        for f in _inbox(run_dir).glob(f"*-{uuid}.json") if _inbox(run_dir).is_dir() else []:
+            f.unlink(missing_ok=True)
+        meta = read_meta(run_dir)
+        for m in meta.get("messages") or []:
+            if m.get("uuid") == uuid:
+                m["delivered_at"] = now()
+        write_json(meta_path(run_dir), meta)
 
 
 def close(run_dir, decide):

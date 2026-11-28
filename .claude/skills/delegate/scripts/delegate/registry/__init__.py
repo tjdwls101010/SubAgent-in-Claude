@@ -6,6 +6,7 @@ __all__ = [
     "claim_group",
     "claim_slot",
     "close",
+    "confirm",
     "enqueue",
     "ensure_runs_dir",
     "find_by_origin_job",
@@ -51,7 +52,7 @@ __all__ = [
     "write_definition",
 ]
 
-from .inbox import close, enqueue, pending, take
+from .inbox import close, confirm, enqueue, pending, take
 from .runs import ACTIVE, DIRNAME, TERMINAL, ensure_runs_dir, find_run, is_live, iter_runs, live_runs, newest_on, publish_lock, publish_run, read_meta, reap, record_if_active, registry_args, resolve_runs_dir, supervisor_alive, unreadable_runs, update_meta, worker_alive
 from .groups import claim_group, group_view, list_groups, release_group, update_group, update_slot, valid_group_name
 from .schedules import LEGACY_RUNS_DIR, claim_slot, find_by_origin_job, latest_job, read_definition, read_job, record_job, release_legacy_definition, remove_schedule_state, schedule_dir, schedule_lock, schedule_runs_live, schedule_state, schedule_state_holder, slot_unfilled, sync_lock, take_over_legacy_state, update_job, write_definition

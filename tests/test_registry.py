@@ -168,6 +168,12 @@ class Inbox(unittest.TestCase):
         self.assertEqual([m["text"] for m in written], ["first", "second"])
         msgs = reg.read_meta(self.run_dir)["messages"]
         self.assertEqual([(m["uuid"], m["after_line"], m["kind"], m["priority"]) for m in msgs], [("u1", 7, "prompt", None), ("u2", 7, "send", "now")])
+        self.assertEqual([m["delivered_at"] for m in msgs], [None, None], "handed to the writer is not yet written")
+        self.assertEqual(reg.take(self.run_dir, written.append, lambda: 9), [], "a message handed once is not handed again")
+        self.assertFalse(reg.close(self.run_dir, lambda meta: True), "closes while a write is unconfirmed")
+        reg.confirm(self.run_dir, "u1")
+        reg.confirm(self.run_dir, "u2")
+        self.assertTrue(all(m["delivered_at"] for m in reg.read_meta(self.run_dir)["messages"]))
         self.assertFalse(reg.close(self.run_dir, lambda meta: False))
         self.assertTrue(reg.close(self.run_dir, lambda meta: True))
         self.assertEqual(reg.enqueue(self.run_dir, "u3", "late"), "closed")

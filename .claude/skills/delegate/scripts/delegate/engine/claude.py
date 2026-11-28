@@ -14,7 +14,7 @@ from pathlib import Path
 from delegate.claude_cli import EFFORTS, PROFILES, worktree_location, VERIFIED_VERSION, quota as usage_report, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, model_aliases, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
 from delegate.git import branch_exists, main_checkout, startup_snapshot, toplevel
-from delegate.registry import TERMINAL, close, enqueue, is_live, iter_runs, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
+from delegate.registry import TERMINAL, close, confirm, enqueue, is_live, iter_runs, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
@@ -227,13 +227,14 @@ def is_worker_command(command):
 
 
 class StdinWriter:
-    """Writes messages to claude's stdin from a thread of its own, so a message bigger than the pipe, which claude has not started reading, never holds up the supervisor's loop (its deadline and stop) or the run's lock. `close()` closes stdin once everything queued is written."""
+    """Writes messages to claude's stdin from a thread of its own, so a message bigger than the pipe, which claude has not started reading, never holds up the supervisor's loop (its deadline and stop) or the run's lock. `on_written(uuid)` is called once a message is written and flushed in full. `close()` closes stdin once everything queued is written."""
 
-    def __init__(self, stdin, on_error):
+    def __init__(self, stdin, on_error, on_written):
         import queue
 
         self.stdin = stdin
         self.on_error = on_error
+        self.on_written = on_written
         self.queue = queue.Queue()
         self.lock = threading.Lock()
         self.pending = 0
@@ -258,6 +259,7 @@ class StdinWriter:
                     self.pending -= 1
             with self.lock:
                 self.written.add(uuid)
+            self.on_written(uuid)
         try:
             self.stdin.close()
         except OSError:
@@ -305,7 +307,7 @@ class Driver:
         self.wt = meta.get("worktree")
         from .process import log
 
-        self.writer = StdinWriter(proc.stdin, lambda e: log(run_dir, f"stdin write failed: {e}"))
+        self.writer = StdinWriter(proc.stdin, lambda e: log(run_dir, f"stdin write failed: {e}"), lambda uuid: confirm(run_dir, uuid))
 
     def bind(self, pump):
         self.pump = pump
@@ -329,7 +331,7 @@ class Driver:
             self.init_done.set()
 
     def _deliver(self, msg):
-        # Handed to the writer: delivery is recorded under the run's lock, and the write itself happens outside it.
+        # Handed to the writer under the run's lock; the write happens outside it, and the writer confirms delivery once it is done.
         self.writer.put(msg["uuid"], encode_user_message(msg["text"], msg["uuid"], msg.get("priority")).encode("utf-8"))
 
     def _lines_read(self):

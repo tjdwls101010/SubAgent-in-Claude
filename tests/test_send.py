@@ -32,6 +32,22 @@ class Send(Sandbox):
         log = self.cli("log", "--run", reply["run_id"]).stdout
         self.assertIn("sent next also this", log)
 
+    def test_a_message_the_worker_does_not_read_is_not_delivered(self):
+        """PR④ GPT review: a message bigger than the pipe, to a worker that reads nothing, is not `delivered` while its write is still blocked."""
+        import os
+        import signal
+
+        reply = self.start("first [[fake:sleep:30]]")
+        self.wait_state(reply["run_id"], states=("running",))
+        pid = json.loads((self.run_dir(reply["run_id"]) / "meta.json").read_text())["worker_pid"]
+        os.kill(pid, signal.SIGSTOP)
+        try:
+            sent = self.cli_json("send", reply["run_id"], input="x" * 1_000_000)
+        finally:
+            os.kill(pid, signal.SIGCONT)
+        self.assertFalse(sent["delivered"], "a 1 MB message cannot fit in the pipe of a stopped reader")
+        self.cli_json("stop", "--run", reply["run_id"])
+
     def test_interrupt_ends_the_turn_and_answers_the_message(self):
         reply = self.start("first [[fake:sleep:30]]")
         sent = self.cli_json("send", reply["run_id"], "change course [[fake:reply:new direction]]", "--interrupt")

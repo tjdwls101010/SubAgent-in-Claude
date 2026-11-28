@@ -66,7 +66,7 @@ Exits: 0 started; 1 refused or failed — the session has a live run (`instead` 
 
 SEND_DESC = """\
 Write a message into a live claude run while it works, to correct or extend what it is doing. By default the message has priority `next`: Claude Code reads it once the tools it is running finish, in the same turn or, if the turn ends first, as the next one. --interrupt sends it with priority `now`, which ends the running turn and starts on the message. The run ends once every message has been answered. A codex run takes no message mid-turn (this skill runs it through `codex exec`): the refusal's `instead` says to wait for it, or stop it and resume with the message.
-Prints: one JSON line — `run_id`, `engine`, `message_uuid`, `priority`, `delivered` (whether the supervisor wrote it to the worker within 10 s), and `note` when it did not.
+Prints: one JSON line — `run_id`, `engine`, `message_uuid`, `priority`, `delivered` (whether the supervisor wrote all of it to the worker's stdin within 10 s; a worker that is not reading leaves it false, and the message is written once it reads), and `note` when it did not.
 Exits: 0 queued; 1 refused — a codex run, a run that no longer reads messages (it ended, is finishing, or its supervisor is gone; `instead` says what to do), a run that already took 16 messages, no such run, or run from inside a worker; 2 the command line must change — no REF, no message or an empty one."""
 
 BATCH_DESC = """\
