@@ -160,7 +160,7 @@ def _module_stores(repo):
 
 
 def submodule_commits_only_here(worktree, main):
-    """The submodules whose store goes with the checkout at `worktree` — each one under its own git directory's modules/, initialised or left by `submodule deinit`, and one cloned into the checkout with a .git directory of its own — holding a commit the main checkout's store of that submodule does not have: its checked-out commit, or what any of its refs points at (a local branch, a tag, a stash, and a remote-tracking ref too, whose branch the remote may have dropped) — since commits made there live only in this store, so removing the checkout loses them. A main checkout without that submodule, or git failing to tell or skipping a ref it cannot read, counts as not having it. None when the stores cannot all be listed."""
+    """The submodules whose store goes with the checkout at `worktree` — each one under its own git directory's modules/, initialised or left by `submodule deinit`, and one cloned into the checkout with a .git directory of its own — holding a commit the main checkout's store of that submodule does not hold under a ref of its own: its checked-out commit, or what any of its refs points at (a local branch, a tag, a stash, and a remote-tracking ref too, whose branch the remote may have dropped) — since commits made there live only in this store, so removing the checkout loses them. A main checkout without that submodule, or git failing to tell or skipping a ref it cannot read, counts as not having it. Each as `{submodule, store, main_store}` (`main_store` None when the main checkout has none); None when the stores cannot all be listed."""
     theirs, ours = _module_stores(main) or {}, _module_stores(worktree)
     code, out, _ = run_git(worktree, "ls-files", "-s", "-z")
     if ours is None or code != 0:
@@ -177,9 +177,15 @@ def submodule_commits_only_here(worktree, main):
         head_code, head, _ = run_git(worktree, f"--git-dir={store}", "rev-parse", "--verify", "-q", "HEAD")
         tips = {head.strip()} | {line for line in refs.splitlines() if line}
         # git skips a ref it cannot read with only a warning ("ignoring broken ref"); what that ref holds is then unknown.
-        if code != 0 or warned.strip() or head_code != 0 or there is None or any(run_git(worktree, f"--git-dir={there}", "cat-file", "-e", f"{tip}^{{commit}}")[0] != 0 for tip in sorted(tips)):
-            only.append(name)
+        if code != 0 or warned.strip() or head_code != 0 or there is None or not _held(there, tips):
+            only.append({"submodule": name, "store": str(store), "main_store": str(there) if there else None})
     return only
+
+
+def _held(store, commits):
+    """Whether every one of `commits` is in the git directory `store` and reachable from its HEAD or one of its refs: an object a fetch left without a ref (only FETCH_HEAD names it, or the ref update was refused) goes with the next gc."""
+    code, out, _ = run_git(store, f"--git-dir={store}", "rev-list", "-n1", *sorted(commits), "--not", "--all")
+    return code == 0 and not out.strip()
 
 
 def commits_beyond(repo, branch, base):

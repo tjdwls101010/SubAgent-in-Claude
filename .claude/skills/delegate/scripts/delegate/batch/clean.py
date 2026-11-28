@@ -10,6 +10,8 @@ A caller that can ask GitHub (a schedule's Finish) passes `landed`: a member who
 from __future__ import annotations
 
 import os
+import shlex
+import time
 from pathlib import Path
 
 from delegate.errors import NotFound, Refusal
@@ -181,7 +183,10 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
             return
         if stranded:
             # A submodule's commits made in this checkout are stored only in it; they are kept whatever --force says, as detached commits are.
-            kept.append({**entry, "reason": f"submodule(s) {', '.join(stranded)} hold commits your checkout's copy does not have, which removing it would lose", "instead": f"fetch them into your checkout first: git -C <your submodule> fetch {path}/<submodule> HEAD 'refs/*:refs/delegate/{group}-{slot['index']}/*'"})
+            # Into refs no earlier keeping used, so no fetch is refused for a ref it would move; HEAD by name, since a fetch keeps it only in FETCH_HEAD otherwise.
+            under = f"refs/delegate/{group}-{slot['index']}-{time.strftime('%Y%m%d%H%M%S')}-{os.getpid()}"
+            fetches = [f"git {'--git-dir=' + shlex.quote(s['main_store']) if s['main_store'] else '-C ' + shlex.quote('<your copy of ' + s['submodule'] + '>')} fetch {shlex.quote(s['store'])} {shlex.quote(f'HEAD:{under}/HEAD')} {shlex.quote(f'refs/*:{under}/*')}" for s in stranded]
+            kept.append({**entry, "reason": f"submodule(s) {', '.join(s['submodule'] for s in stranded)} hold commits your checkout's copy does not hold under a ref, which removing it would lose", "instead": "fetch them into your checkout first: " + " && ".join(fetches)})
             return
         artifacts = (meta or {}).get("startup_artifacts") or {}
         left = leftovers(path, repo, artifacts)

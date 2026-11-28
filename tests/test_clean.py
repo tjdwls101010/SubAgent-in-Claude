@@ -468,11 +468,9 @@ class PostReview(Worktrees):
         self.assertEqual([k["index"] for k in out["kept"]], [1], out)
         self.assertIn("submodule", out["kept"][0]["reason"])
         self.assertEqual(git(wt / "lib", "rev-parse", "feature"), work)
-        import shlex, subprocess
-        advice = shlex.split(out["kept"][0]["instead"].split(": ", 1)[1].replace("<your submodule>", str(self.project / "lib")).replace("<submodule>", "lib"))
-        subprocess.run(advice, check=True, capture_output=True, env=self.env)
+        self.follow(out["kept"][0]["instead"])
         self.assertTrue(self.clean("sb")["name_released"], "following the advice should let clean finish")
-        self.assertEqual(git(self.project / "lib", "rev-parse", "refs/delegate/sb-1/heads/feature"), work)
+        self.assertTrue(self.held_by_a_ref(self.store(self.project, "lib"), work))
 
     def submodules(self, name, *paths):
         """A project with a submodule at each of `paths` and a group `name` whose one checkout has them initialised."""
@@ -542,3 +540,39 @@ class PostReview(Worktrees):
         out = self.clean("br")
         self.assertEqual([k["index"] for k in out["kept"]], [1], out)
         self.assertTrue(wt.exists())
+
+    def follow(self, instead):
+        """Run the commands a kept member's `instead` gives after its colon, as a person would paste them."""
+        import subprocess
+        proc = subprocess.run(["sh", "-c", instead.split(": ", 1)[1]], capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def held_by_a_ref(self, store, commit):
+        return git(self.project, "--git-dir", store, "for-each-ref", "--contains", commit, "--format=%(refname)").splitlines()
+
+    def test_following_the_advice_keeps_the_commits_under_a_ref_every_time(self):
+        # GPT review of the clean fixes, finding 4: a commit only FETCH_HEAD names is not kept, and a second use of the name must not collide with the first's refs.
+        wt = self.submodules("rc", "lib")
+        mine = self.store(self.project, "lib")
+        git(wt / "lib", "switch", "-q", "--detach")
+        (wt / "lib" / "lib.txt").write_text("detached\n")
+        git(wt / "lib", "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "detached work")
+        work = git(wt / "lib", "rev-parse", "HEAD")
+        git(self.project, "--git-dir", mine, "fetch", "-q", str(wt / "lib"), "HEAD")
+        out = self.clean("rc", "--force")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], f"a commit only FETCH_HEAD names counted as kept: {out}")
+        self.follow(out["kept"][0]["instead"])
+        self.assertTrue(self.held_by_a_ref(mine, work))
+        self.assertTrue(self.clean("rc", "--force")["name_released"])
+        # Two later uses of the name, each with its own feature branch: the second keeping must not be refused for the first's refs.
+        firsts = {}
+        for n in (1, 2):
+            self.batch("rc", "x")
+            git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+            firsts[n] = self.commit_on_feature(wt / "lib")
+            out = self.clean("rc")
+            self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+            self.follow(out["kept"][0]["instead"])
+            self.assertTrue(self.clean("rc")["name_released"])
+            self.assertTrue(self.held_by_a_ref(mine, firsts[n]), n)
+        self.assertNotEqual(firsts[1], firsts[2])
