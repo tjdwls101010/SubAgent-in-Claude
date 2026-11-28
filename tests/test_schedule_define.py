@@ -711,6 +711,19 @@ class Legacy(Scheduling):
         self.cli_json("unschedule", "--name", "nightly")
         self.assertIsNone(json.loads(old.read_text())["definition"])
 
+    def test_unschedule_of_a_name_that_differs_only_by_case_keeps_the_old_records_definition(self):
+        probe = self.root / "Case_Probe"
+        probe.mkdir()
+        if not (self.root / "case_probe").exists():
+            self.skipTest("the temporary directory is on a file system that tells letter case apart, where the two names do not share a path")
+        old = self.old_record(NOW - 3600)
+        self.plant("claude-nightly.yml", self.legacy())
+        self.plant_plist(label=self.OLD_LABEL)
+        self.cli_json("unschedule", "--name", "NIGHTLY")
+        self.assertEqual(json.loads(old.read_text())["definition"], "715ffbd0", "the old record is schedule nightly's, which is still there")
+        self.assertEqual(self.files(), ["claude-nightly.yml"])
+        self.assertTrue(self.plist(self.OLD_LABEL))
+
     def test_a_takeover_whose_first_call_could_not_install_still_removes_the_old_dispatcher(self):
         self.plant("claude-nightly.yml", self.legacy())
         self.plant_plist(label=self.OLD_LABEL)

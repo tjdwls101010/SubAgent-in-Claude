@@ -258,13 +258,13 @@ def take_over_legacy_state(registry, name, legacy_registry, keep_definition=Fals
 
 
 def release_legacy_definition(name, legacy_registry):
-    """Clear the definition the `claude` skill recorded of schedule `name`, under that skill's lock, so a job its command still runs leaves alone, at its end, whatever is scheduled under the name next. Returns whether there was one to clear."""
+    """Clear the definition the `claude` skill recorded of schedule `name`, under that skill's lock, so a job its command still runs leaves alone, at its end, whatever is scheduled under the name next. A record that names another schedule — one whose name differs only by letter case or Unicode form, at the same path on this Mac — is left alone. Returns whether there was one to clear."""
     old_path = Path(legacy_registry) / ".schedules" / name / "state.json"
     if not old_path.exists():  # the old skill never recorded it: no definition to clear, and taking its lock would make its registry here
         return False
     with locked(Path(legacy_registry) / ".locks" / f"schedule-{name}.lock"):
         old = read_json(old_path)
-        if not old or old.get("definition") is None:
+        if not old or old.get("definition") is None or old.get("name", name) != name:
             return False
         write_json(old_path, {**old, "definition": None})
         return True
