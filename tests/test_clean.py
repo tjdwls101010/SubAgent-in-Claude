@@ -472,3 +472,49 @@ class PostReview(Worktrees):
         subprocess.run(advice, check=True, capture_output=True, env=self.env)
         self.assertTrue(self.clean("sb")["name_released"], "following the advice should let clean finish")
         self.assertEqual(git(self.project / "lib", "rev-parse", "refs/delegate/sb-1/heads/feature"), work)
+
+    def submodules(self, name, *paths):
+        """A project with a submodule at each of `paths` and a group `name` whose one checkout has them initialised."""
+        from support.harness import make_repo
+
+        lib = self.root / "lib"
+        make_repo(lib, {"lib.txt": "1\n"})
+        for rel in paths:
+            git(self.project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), rel)
+        git(self.project, "commit", "-q", "-m", "add submodules")
+        self.batch(name, "x")
+        wt = self.wt(f"{name}-1")
+        git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+        return wt
+
+    def commit_on_feature(self, sub):
+        """A commit on a new local branch of the submodule checkout `sub`, then back on the commit the checkout records."""
+        git(sub, "switch", "-q", "-c", "feature")
+        (sub / "lib.txt").write_text("2\n")
+        git(sub, "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "only on feature")
+        work = git(sub, "rev-parse", "HEAD")
+        git(sub, "switch", "-q", "--detach", "HEAD~1")
+        return work
+
+    def store(self, wt, name):
+        """The git directory the checkout `wt` keeps submodule `name` in, which goes with the checkout."""
+        return git(wt, "rev-parse", "--path-format=absolute", "--git-path", f"modules/{name}")
+
+    def test_a_submodule_whose_path_has_a_space_is_looked_at(self):
+        # GPT review of the clean fixes, finding 2.
+        wt = self.submodules("sp", "lib", "lib with space")
+        work = self.commit_on_feature(wt / "lib with space")
+        out = self.clean("sp")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertIn("lib with space", out["kept"][0]["reason"])
+        self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib with space"), "rev-parse", "feature"), work)
+
+    def test_the_store_of_a_submodule_deinit_left_is_looked_at(self):
+        # GPT review of the clean fixes, finding 2: deinit empties the submodule's directory but leaves its store, which goes with the checkout.
+        wt = self.submodules("dn", "lib")
+        work = self.commit_on_feature(wt / "lib")
+        git(wt, "submodule", "deinit", "-q", "-f", "lib")
+        out = self.clean("dn")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertIn("lib", out["kept"][0]["reason"])
+        self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib"), "rev-parse", "feature"), work)

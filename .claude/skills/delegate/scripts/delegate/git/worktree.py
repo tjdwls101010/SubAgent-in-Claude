@@ -134,24 +134,44 @@ def unlock_and_remove(repo, path, force):
     return True, None
 
 
+def _module_stores(repo):
+    """{name: git directory} of every submodule store the repository at `repo` keeps under its own modules/ (a linked checkout's own, which goes with it), nested ones as `<name>/modules/<name>`; a store outlives `submodule deinit`."""
+    code, out, _ = run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "modules")
+    stores = {}
+
+    def walk(d, prefix):
+        for child in sorted(d.iterdir()) if d.is_dir() else []:
+            if not child.is_dir() or child.is_symlink():
+                continue
+            if (child / "HEAD").is_file() and (child / "objects").is_dir():
+                stores[prefix + child.name] = child
+                walk(child / "modules", f"{prefix}{child.name}/modules/")
+            else:
+                # A name with a slash is a directory per part.
+                walk(child, f"{prefix}{child.name}/")
+
+    if code == 0 and out.strip():
+        walk(Path(out.strip()), "")
+    return stores
+
+
 def submodule_commits_only_here(worktree, main):
-    """The initialised submodules of the checkout at `worktree` holding a commit the main checkout's copy of that submodule does not have — its checked-out commit, or what any of its own refs (a local branch, a tag, a stash; not a remote-tracking ref, which its remote holds) points at — since commits made there live only in this checkout's own submodule store, so removing it loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
-    code, out, _ = run_git(worktree, "submodule", "status", "--recursive")
-    if code != 0:
-        return []
+    """The submodules whose store goes with the checkout at `worktree` — each one under its own git directory's modules/, initialised or left by `submodule deinit`, and one cloned into the checkout with a .git directory of its own — holding a commit the main checkout's store of that submodule does not have: its checked-out commit, or what any of its own refs (a local branch, a tag, a stash; not a remote-tracking ref, which its remote holds) points at — since commits made there live only in this store, so removing the checkout loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
+    theirs = _module_stores(main)
+    pairs = [(name, store, theirs.get(name)) for name, store in _module_stores(worktree).items()]
+    code, out, _ = run_git(worktree, "ls-files", "-s", "-z")
+    for item in out.split("\0") if code == 0 else []:
+        meta, _, rel = item.partition("\t")
+        if meta.startswith("160000 ") and (Path(worktree) / rel / ".git").is_dir():
+            there = Path(main) / rel / ".git"
+            pairs.append((nfc(rel), Path(worktree) / rel / ".git", there if there.exists() else None))
     only = []
-    for line in out.splitlines():
-        if not line or line[0] == "-":
-            continue
-        parts = line[1:].split()
-        if len(parts) < 2:
-            continue
-        sha, rel = parts[0], parts[1]
-        there = Path(main) / rel
-        code, refs, _ = run_git(str(Path(worktree) / rel), "for-each-ref", "--format=%(objectname) %(refname)")
-        tips = {sha} | {line.split(" ", 1)[0] for line in refs.splitlines() if line and not line.split(" ", 1)[-1].startswith("refs/remotes/")}
-        if code != 0 or not there.is_dir() or any(run_git(str(there), "cat-file", "-e", f"{tip}^{{commit}}")[0] != 0 for tip in sorted(tips)):
-            only.append(rel)
+    for name, store, there in pairs:
+        code, refs, _ = run_git(worktree, f"--git-dir={store}", "for-each-ref", "--format=%(objectname) %(refname)")
+        _, head, _ = run_git(worktree, f"--git-dir={store}", "rev-parse", "--verify", "-q", "HEAD")
+        tips = {head.strip()} - {""} | {line.split(" ", 1)[0] for line in refs.splitlines() if line and not line.split(" ", 1)[-1].startswith("refs/remotes/")}
+        if code != 0 or there is None or any(run_git(worktree, f"--git-dir={there}", "cat-file", "-e", f"{tip}^{{commit}}")[0] != 0 for tip in sorted(tips)):
+            only.append(name)
     return only
 
 
