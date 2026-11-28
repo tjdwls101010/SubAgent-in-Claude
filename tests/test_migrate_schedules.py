@@ -14,6 +14,7 @@ from support.harness import ENTRY, REPO as SKILL_REPO, engine
 from test_schedule_define import AT, NEW, REPO, TZ, Scheduling
 
 github = engine("delegate.github")
+registry = engine("delegate.registry")
 JOB = SKILL_REPO / "migrate_schedules" / "run.py"
 LEGACY_HEADER = "# Written by the claude skill's `schedule` command. Run it again with the same --name to change it; `unschedule` removes it."
 OLD_PREFIX = "claude-schedule.someone-project."
@@ -68,7 +69,8 @@ class MoveWorld(Scheduling):
 
     def job(self, step, *extra, now=T0, expect=0):
         proc = subprocess.run([sys.executable, str(JOB), step, "--project", str(self.project), "--cli", str(ENTRY), "--now", str(now), *extra], cwd=self.project, env=self.env, capture_output=True, text=True, timeout=300)
-        self.assertEqual(proc.returncode, expect, proc.stdout + proc.stderr)
+        if expect is not None:
+            self.assertEqual(proc.returncode, expect, proc.stdout + proc.stderr)
         return json.loads(proc.stdout)
 
     def writes(self):
@@ -113,6 +115,8 @@ class Move(MoveWorld):
         self.assertEqual(self.plist(NEW_PREFIX + "nightly")["Label"], NEW_PREFIX + "nightly")
         dispatched = [c for c in self.gh_calls() if c["argv"][:2] == ["workflow", "run"]]
         self.assertEqual([(c["argv"][2], [a for a in c["argv"] if a.startswith("slot=")]) for c in dispatched], [("nightly.yml", [f"slot={ts(18, 3)}"])], "the missed slot is dispatched as itself")
+        # The recovery's run claims its slot, as its Run step does.
+        registry.claim_slot(str(self.runs_dir()), "nightly", ts(18, 3), "44000000001-1", {"trigger": "recovery", "profile": "full"}, exact=True)
         check = self.job("verify", now=later)
         self.assertEqual(check["problems"], [])
         held = [r for r in check["schedules"] if r["disposition"] == "held"]
@@ -261,3 +265,25 @@ class MoveReview(MoveWorld):
         self.job("resume", now=ts(18, 3) - 1)
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]])
+
+    def test_a_recovery_counts_once_its_run_claims_the_slot(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        later, slot = T0 + 86400, ts(18, 3)
+        self.job("resume", now=later)
+        # GitHub took the dispatch, but its run ended (cancelled, failed to start) before it claimed the slot: the slot has not run.
+        check = self.job("verify", now=later, expect=1)
+        self.assertTrue(any(p.startswith("nightly:") and str(slot) in p for p in check["problems"]), check["problems"])
+        w = self.world()
+        w["runs"][-1]["status"] = "queued"
+        self.world(w)
+        self.assertEqual({r["name"]: r["status"] for r in self.job("resume", now=later, expect=3)["results"]}["nightly"], "waiting", "a run still on its way may yet claim it")
+        w["runs"][-1]["status"] = "completed"
+        self.world(w)
+        self.job("resume", now=later)
+        dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
+        self.assertEqual(dispatched, [[f"slot={slot}"], [f"slot={slot}"]], "an ended run that claimed nothing is dispatched again")
+        registry.claim_slot(str(self.runs_dir()), "nightly", slot, "44000000002-1", {"trigger": "recovery", "profile": "full"}, exact=True)
+        self.job("resume", now=later)
+        self.assertEqual(len([c for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]), 2, "a claimed slot is not dispatched again")
+        self.assertEqual([p for p in self.job("verify", now=later, expect=None)["problems"] if p.startswith("nightly")], [])
