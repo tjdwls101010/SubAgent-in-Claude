@@ -577,3 +577,16 @@ class MoveRepairReview(MoveWorld):
         self.assertEqual(proc.returncode, 0, out + err)
         later = {r.get("name"): r for r in json.loads(out)["schedules"]}["later"]
         self.assertEqual(later["class"], "finished", later)
+
+    def test_the_missing_backups_advice_finishes_the_rollback(self):
+        label = OLD_PREFIX + "nightly"
+        original = (self.home / "Library" / "LaunchAgents" / f"{label}.plist").read_bytes()
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        (self.runs_dir() / ".migration" / "backup" / f"{label}.plist").unlink()
+        error = self.job("rollback", "--only", "nightly", expect=1)["results"][0]["error"]
+        # Done as the message says: the original plist put back where it names.
+        where = Path(error.split("restore the plist to ", 1)[1].split(" and run", 1)[0])
+        where.write_bytes(original)
+        self.assertEqual(self.job("rollback", "--only", "nightly")["results"][0]["status"], "done")
+        self.assertIn(label, json.loads((self.lc_state / "loaded.json").read_text()), "the old dispatcher is loaded again")

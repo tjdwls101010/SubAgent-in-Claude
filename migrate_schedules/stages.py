@@ -329,7 +329,7 @@ def rollback(j: Journal, row, ctx):
     # Done only with the old dispatcher loaded: one a stopped rollback already loaded is left as it is (launchd refuses to load it twice), and one the inventory saw whose backup is gone is not quietly skipped.
     if want == "active" and (had or backup.is_file()) and agent_state(old_label) != "loaded":
         if not backup.is_file():
-            raise RuntimeError(f"{name}: the old dispatcher's backup {backup} is gone, so it cannot be put back — restore the plist to {agents_dir() / f'{old_label}.plist'} and run the rollback again")
+            raise RuntimeError(f"{name}: the old dispatcher's backup is gone, so it cannot be put back — restore the plist to {backup} and run the rollback again")
         shutil.copy2(backup, agents_dir() / f"{old_label}.plist")
         loaded = load_agent(old_label)
         if loaded["status"] != "loaded":
