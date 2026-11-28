@@ -590,3 +590,48 @@ class MoveRepairReview(MoveWorld):
         where.write_bytes(original)
         self.assertEqual(self.job("rollback", "--only", "nightly")["results"][0]["status"], "done")
         self.assertIn(label, json.loads((self.lc_state / "loaded.json").read_text()), "the old dispatcher is loaded again")
+
+    def share_a_label(self, prefix):
+        """The plist of schedule `b` of `someone/project.a` at the path of the label it shares with this repository's schedule `a.b` (`<prefix>a.b`), loaded."""
+        label = prefix + "a.b"
+        path, data = self.plant_plist(label=label, repo="someone/project.a")
+        loaded = self.lc_state / "loaded.json"
+        (loaded).write_text(json.dumps({**(json.loads(loaded.read_text()) if loaded.exists() else {}), label: str(path)}))
+        return path, data
+
+    def assert_untouched(self, path, data, label):
+        self.assertEqual(path.read_bytes(), data, "another repository's dispatcher is left as it is")
+        self.assertIn(label, json.loads((self.lc_state / "loaded.json").read_text()), "and stays loaded")
+
+    def test_freeze_leaves_another_repositorys_dispatcher_alone(self):
+        self.plant_old("a.b", self.legacy_text("a.b", cron="0 4 * * *"))
+        path, data = self.share_a_label(OLD_PREFIX)
+        self.job("inventory")
+        out = self.job("freeze", "--only", "a.b", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assert_untouched(path, data, OLD_PREFIX + "a.b")
+        self.assertFalse((self.runs_dir() / ".migration" / "backup" / f"{OLD_PREFIX}a.b.plist").exists())
+        self.assertEqual(self.repo()["workflows"]["a.b.yml"], "active", "nothing of the schedule is frozen")
+
+    def test_resume_and_rollback_leave_another_repositorys_new_dispatcher_alone(self):
+        self.plant_old("a.b", self.legacy_text("a.b", cron="0 4 * * *"))
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        # Meanwhile `someone/project.a` moved its schedule `b`: its new dispatcher has the label this one's would get.
+        path, data = self.share_a_label(NEW_PREFIX)
+        out = self.job("resume", "--only", "a.b", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assert_untouched(path, data, NEW_PREFIX + "a.b")
+        self.assertEqual(self.repo()["workflows"]["a.b.yml"], "disabled_manually", "not switched on without a dispatcher")
+        self.job("rollback", "--only", "a.b")
+        self.assert_untouched(path, data, NEW_PREFIX + "a.b")
+        self.assertEqual(self.plist(OLD_PREFIX + "a.b")["ProgramArguments"][5], REPO, "its own old dispatcher is back")
+
+    def test_a_rollback_does_not_restore_over_another_repositorys_dispatcher(self):
+        self.plant_old("a.b", self.legacy_text("a.b", cron="0 4 * * *"))
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        path, data = self.share_a_label(OLD_PREFIX)
+        out = self.job("rollback", "--only", "a.b", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assert_untouched(path, data, OLD_PREFIX + "a.b")

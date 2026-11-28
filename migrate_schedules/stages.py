@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import shutil
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 from delegate.errors import Refusal
 from delegate.github import delete_workflow, dispatch_workflow, gh_path, parse_spec, read_workflow, render_workflow, set_workflow_enabled, unfinished_runs, workflow_state, write_workflow
@@ -41,6 +43,24 @@ def old_live_runs(project, name):
     return out
 
 
+def _dispatches_here(path, label, repo):
+    """Whether the plist at `path` is the dispatcher `label` of this repository: its `Label` is `label` and its command names `--repo` `repo`. A label joins owner, repository and name without marking where each ends — `project`'s schedule `a.b` and `project.a`'s `b` share one — so the move backs up, removes, replaces or restores only a plist that passes."""
+    try:
+        data = plistlib.loads(Path(path).read_bytes())
+    except (OSError, ValueError, ExpatError):
+        return False
+    argv = data.get("ProgramArguments") if isinstance(data, dict) else None
+    argv = [str(a) for a in argv] if isinstance(argv, list) else []
+    target = argv[argv.index("--repo") + 1] if "--repo" in argv[:-1] else None
+    return data.get("Label") == label and (target or "").lower() == repo.lower()
+
+
+def _foreign(label, repo):
+    """The plist at `label`'s place in LaunchAgents when one is there that is not this repository's `label` dispatcher, else None."""
+    path = agents_dir() / f"{label}.plist"
+    return path if path.exists() and not _dispatches_here(path, label, repo) else None
+
+
 def _move_plist_out(label, backup):
     """Keep the plist at `backup` (moved, not copied), then unload it and delete it from LaunchAgents; a plist already kept is not taken twice."""
     src = agents_dir() / f"{label}.plist"
@@ -65,6 +85,9 @@ def freeze(j: Journal, row, ctx):
         return
     if not s.get("plist_moved"):
         label = legacy_dispatcher_label(ctx["repo"], name)
+        other = _foreign(label, ctx["repo"])
+        if other:
+            raise RuntimeError(f"{name}: {other} is not this repository's dispatcher of it (another repository's under the same label, or one that cannot be read); it was left alone and nothing was frozen")
         if not s.get("frozen_at"):
             # Journaled before the dispatcher is touched: a step that stops once it is unloaded still has when the freeze began, which the slots to recover start from, and a rollback finds the schedule and its backup.
             j.update(name, plist_backup=str(j.backup / f"{label}.plist"), frozen_at=ctx["now"])
@@ -203,10 +226,13 @@ def resume(j: Journal, row, ctx):
     spec = s.get("spec") or new_spec(row, ctx, frozen_at=s.get("frozen_at"))
     want = expected(row, ctx)
     if want == "active":
+        label = dispatcher_label(ctx["repo"], name)
+        other = _foreign(label, ctx["repo"])
+        if other:
+            raise RuntimeError(f"{name}: {other} is not this repository's dispatcher of it (another repository's under the same label, or one that cannot be read); it was left alone and the workflow was not switched on")
         set_workflow_enabled(ctx["repo"], row["file"], True)
         if workflow_state(ctx["repo"], row["file"]) != "active":
             raise NotYet(f"{name}: GitHub does not show its workflow enabled yet")
-        label = dispatcher_label(ctx["repo"], name)
         got = install_agent(label, dispatcher_argv(gh_path(), ctx["repo"], row["file"], ctx["branch"]), calendar_entries(fields_of(spec)), dispatcher_log(ctx["repo"], name))
         if got["status"] != "installed":
             raise NotYet(f"{name}: the dispatcher was not installed: {got.get('error')}")
@@ -231,7 +257,7 @@ def _end_one_off(j, row, ctx):
     """A one-off whose slot ran, resumed or not: its workflow off and this skill's dispatcher gone, as its own Finish leaves it, without running it again — also when that Finish could not."""
     set_workflow_enabled(ctx["repo"], row["file"], False)
     label = dispatcher_label(ctx["repo"], row["name"])
-    if agent_state(label) != "missing":
+    if agent_state(label) != "missing" and not _foreign(label, ctx["repo"]):
         gone = remove_agent(label)
         if gone["status"] == "failed":
             raise NotYet(f"{row['name']}: its dispatcher {label} could not be removed: {gone.get('error')}")
@@ -282,9 +308,9 @@ def rollback(j: Journal, row, ctx):
     old_text = (s.get("published") or {}).get("old_text") or (s.get("pending") or {}).get("old_text")
     # Checked before anything is touched, and restored against the version checked: a change someone makes after the check makes the restore's commit fail instead of being overwritten.
     checked = _own_file(row, ctx, s, old_text) if old_text else None
-    # Whatever of this skill's dispatcher exists goes, also after a resume that stopped halfway.
+    # Whatever of this skill's dispatcher exists goes, also after a resume that stopped halfway; another repository's under the same label is not this schedule's.
     label = dispatcher_label(ctx["repo"], name)
-    if agent_state(label) != "missing":
+    if agent_state(label) != "missing" and not _foreign(label, ctx["repo"]):
         _move_plist_out(label, j.backup / f"{label}.plist")
     # A finished one-off was never switched on under this skill — resume passes it by — and its file may be gone: there is no new side to freeze.
     if row["class"] != "finished" and (s.get("published") or s.get("pending") or s.get("new_dispatcher")):
@@ -327,9 +353,14 @@ def rollback(j: Journal, row, ctx):
     old_label = legacy_dispatcher_label(ctx["repo"], name)
     had = (row.get("dispatcher") or {}).get("state") not in (None, "missing")
     # Done only with the old dispatcher loaded: one a stopped rollback already loaded is left as it is (launchd refuses to load it twice), and one the inventory saw whose backup is gone is not quietly skipped.
-    if want == "active" and (had or backup.is_file()) and agent_state(old_label) != "loaded":
+    other = _foreign(old_label, ctx["repo"])
+    if want == "active" and (had or backup.is_file()) and (other or agent_state(old_label) != "loaded"):
+        if other:
+            raise RuntimeError(f"{name}: {other} is not this repository's dispatcher of it (another repository's under the same label, or one that cannot be read), so the old one cannot be put back there; it was left alone")
         if not backup.is_file():
             raise RuntimeError(f"{name}: the old dispatcher's backup is gone, so it cannot be put back — restore the plist to {backup} and run the rollback again")
+        if not _dispatches_here(backup, old_label, ctx["repo"]):
+            raise RuntimeError(f"{name}: the backup {backup} is not this repository's dispatcher {old_label}; put that one there and run the rollback again")
         shutil.copy2(backup, agents_dir() / f"{old_label}.plist")
         loaded = load_agent(old_label)
         if loaded["status"] != "loaded":
