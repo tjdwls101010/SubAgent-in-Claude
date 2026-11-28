@@ -104,8 +104,11 @@ class Send(Sandbox):
         self.assertIn("result --run", send["instead"])
         self.assertIn("--wait", send["instead"])
         resume = self.cli_json("resume", reply["run_id"], "more", expect=1)
-        self.assertIn("stop --run", resume["instead"])
-        self.assertNotIn(" send ", resume["instead"])
+        # The answer is in: a stop would record it as interrupted, so the wait comes first and the stop is only the alternative.
+        self.assertIn("result --run", resume["instead"])
+        self.assertIn("--wait", resume["instead"])
+        self.assertIn("stop --run", resume["or"])
+        self.assertNotIn(" send ", resume["instead"] + resume["or"])
         self.cli_json("stop", "--run", reply["run_id"])
 
     def test_live_run_resume_points_to_send(self):

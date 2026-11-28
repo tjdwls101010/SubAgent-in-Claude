@@ -158,10 +158,12 @@ def reply_fields(meta):
 
 
 def live_instead(run_id, meta, runs_dir):
-    """What to do instead of starting another run on a session that has a live one: send to it while its stdin is open, otherwise stop it first."""
+    """What to do instead of starting another run on a session that has a live one: send to it while its stdin is open; wait for it once its answer is in (a stop would record that answer as interrupted), with stopping it first as the alternative; otherwise stop it first."""
     extra = registry_args(runs_dir)
     if meta.get("state") in ("starting", "running") and meta.get("stdin_open") and supervisor_alive(meta):
         return {"instead": invocation("send", run_id, "<message>", *extra), "why": "the run is live and still reading messages"}
+    if meta.get("state") in ("starting", "running", "finishing") and supervisor_alive(meta):
+        return {"instead": f"{invocation('result', '--run', run_id, '--wait', *extra)}, then resume", "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run no longer reads messages: its answer is in or coming, and a stop now would record it as interrupted"}
     return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run is finishing or its supervisor is gone while claude still runs"}
 
 
