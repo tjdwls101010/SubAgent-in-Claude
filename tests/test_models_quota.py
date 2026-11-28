@@ -252,6 +252,15 @@ class ClaudeLimit(Sandbox):
         refused = self.cli_json("start", *CLAUDE_RUN, "again", expect=1)
         self.assertEqual((refused["error"], refused["source"]), ("quota_exhausted", "a run's rate_limit_event"), "a fresh event of this registry is read before /usage")
 
+    def test_a_limit_event_the_run_ended_on_before_a_poll_still_refuses_the_next_start(self):
+        # The event and the exit come between two of the supervisor's polls: the run's end must still record the event, or the next start reads no event and goes through.
+        slow = {"DELEGATE_TEST_TIMINGS": json.dumps({**FAST_TIMINGS, "poll": 10})}
+        out = self.start("x [[fake:ratelimit:rejected]] [[fake:crash]]", env=slow)
+        row = self.wait_state(out["run_id"])
+        self.assertEqual(row["state"], "quota_exhausted")
+        refused = self.cli_json("start", *CLAUDE_RUN, "again", expect=1)
+        self.assertEqual((refused["error"], refused["source"]), ("quota_exhausted", "a run's rate_limit_event"))
+
     def test_a_runs_event_reports_each_window_with_its_reset(self):
         out = self.start("x")
         self.assertEqual(self.wait_state(out["run_id"])["state"], "completed")
