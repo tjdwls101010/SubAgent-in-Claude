@@ -535,6 +535,7 @@ class MoveRepairReview(MoveWorld):
         out = self.job("rollback", "--only", "nightly", expect=1)
         self.assertEqual(out["results"][0]["status"], "failed")
         self.assertEqual(self.committed("nightly"), edited, "the change made meanwhile is kept")
+        self.assertIn("its workflow is off and it has no dispatcher", json.dumps(out["results"][0], ensure_ascii=False), "the failure says what it left, which a person has to put right")
 
     def test_a_one_off_completed_on_the_new_side_is_finished_after_a_rollback(self):
         self.job("inventory")
@@ -560,6 +561,22 @@ class MoveRepairReview(MoveWorld):
         self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", "its slot ran: it is ended as its Finish would have")
         self.assertIsNone(self.plist(NEW_PREFIX + "later"))
         self.assertEqual([p for p in self.job("verify", now=when + 3600, expect=None)["problems"] if p.startswith("later")], [])
+
+    def test_resume_again_leaves_a_one_off_scheduled_again_under_its_name(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        when = int(datetime(2026, 12, 1, 6, 1, tzinfo=ZoneInfo(TZ)).timestamp())
+        self.run_one_off("later", when, "8")
+        # Done, then scheduled again for another day under the same name: a new definition, its workflow on, a dispatcher installed.
+        with registry.schedule_lock(str(self.runs_dir()), "later"):
+            registry.write_definition(str(self.runs_dir()), "later", "e1e1e1e1")
+        w = self.world()
+        w["repos"][REPO]["workflows"]["later.yml"] = "active"
+        self.world(w)
+        self.plant_plist(label=NEW_PREFIX + "later")
+        self.job("resume", "--only", "later", now=when + 3600)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "active", "not this move's one-off any more")
+        self.assertIsNotNone(self.plist(NEW_PREFIX + "later"))
 
     def test_an_inventory_that_waited_for_the_lock_judges_as_of_when_it_got_it(self):
         self.job("inventory")

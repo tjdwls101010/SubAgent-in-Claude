@@ -13,7 +13,7 @@ from pathlib import Path
 from xml.parsers.expat import ExpatError
 
 from delegate.errors import Refusal
-from delegate.github import delete_workflow, dispatch_workflow, gh_path, parse_spec, read_workflow, render_workflow, set_workflow_enabled, unfinished_runs, workflow_state, write_workflow
+from delegate.github import GitHubError, delete_workflow, dispatch_workflow, gh_path, parse_spec, read_workflow, render_workflow, set_workflow_enabled, unfinished_runs, workflow_state, write_workflow
 from delegate.launchd import agent_state, agents_dir, calendar_entries, install_agent, load_agent, remove_agent
 from delegate.registry import read_meta, schedule_lock, schedule_runs_live, schedule_state, take_over_legacy_state, write_definition
 from delegate.schedule import dispatcher_argv, dispatcher_label, dispatcher_log, fields_of, fire_times, legacy_dispatcher_label, merge
@@ -218,6 +218,11 @@ def resume(j: Journal, row, ctx):
         return
     if s.get("resumed"):
         if s.get("resumed_state") == "active" and expected(row, ctx) == "disabled":
+            with schedule_lock(ctx["registry"], name):
+                current = (schedule_state(ctx["registry"], name) or {}).get("definition")
+            if current != row["definition"]:
+                # Scheduled again under the same name since the move: a new one-off, not this move's to end.
+                return None
             return _end_one_off(j, row, ctx)
         return _recover_again(row, ctx, s)
     missing = [step for step, key in (("freeze", "drained"), ("state", "state_moved"), ("publish", "published")) if not s.get(key)]
@@ -346,7 +351,11 @@ def rollback(j: Journal, row, ctx):
         os.replace(tmp, old_path)
         note["slots_moved_back"] = sorted(changed)
     if old_text and (checked or {}).get("text") != old_text:
-        write_workflow(ctx["repo"], row["file"], old_text, f"Move schedule {name} back to the claude skill", ctx["branch"], sha=(checked or {}).get("sha"))
+        try:
+            write_workflow(ctx["repo"], row["file"], old_text, f"Move schedule {name} back to the claude skill", ctx["branch"], sha=(checked or {}).get("sha"))
+        except GitHubError as e:
+            # GitHub refused the restore against the version checked: someone committed the file while the rollback ran, and their change is kept. The schedule is left frozen, which a person has to settle.
+            raise RuntimeError(f"{name}: .github/workflows/{row['file']} changed while the rollback ran, so the old file was not restored over it ({e}); its workflow is off and it has no dispatcher — find out what changed it, then run the rollback again or schedule it by hand") from e
     want = expected(row, ctx)
     set_workflow_enabled(ctx["repo"], row["file"], want == "active")
     backup = Path(s.get("plist_backup") or "")
