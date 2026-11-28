@@ -10,9 +10,10 @@ import os
 import shutil
 from pathlib import Path
 
+from delegate.errors import Refusal
 from delegate.github import delete_workflow, dispatch_workflow, gh_path, parse_spec, read_workflow, render_workflow, set_workflow_enabled, unfinished_runs, workflow_state, write_workflow
 from delegate.launchd import agent_state, agents_dir, calendar_entries, install_agent, load_agent, remove_agent
-from delegate.registry import schedule_lock, schedule_state, take_over_legacy_state, write_definition
+from delegate.registry import read_meta, schedule_lock, schedule_state, take_over_legacy_state, write_definition
 from delegate.schedule import dispatcher_argv, dispatcher_label, dispatcher_log, fields_of, fire_times, legacy_dispatcher_label, merge
 
 from .inventory import OLD_REGISTRY, at_instant, completed_slot, old_state
@@ -133,6 +134,14 @@ def publish(j: Journal, row, ctx):
     j.update(name, published={"commit": done["commit"], "old_text": current["text"], "old_sha": current["sha"]}, spec=spec)
 
 
+def _run_state(registry, run_id):
+    """The recorded state of a run of this skill, or None."""
+    try:
+        return read_meta(str(Path(registry) / run_id)).get("state") if run_id else None
+    except Refusal:
+        return None
+
+
 def completed_anywhere(row, ctx):
     """Whether a one-off's slot was completed — by the old records, or by a run of this skill since."""
     if not row.get("at"):
@@ -140,8 +149,14 @@ def completed_anywhere(row, ctx):
     slot = int(at_instant(row))
     if completed_slot(ctx["project"], old_state(ctx["project"], row["name"]), slot):
         return True
+    # This skill's record of that slot: the job that claimed it or its retry, whose run completed — a job taken over from the old side by how its run ended, a job of this skill by its run's meta. A cleanup marker says nothing of the slot: it can be another one-off's of the same name, and a completed run whose cleanup failed has none.
     state = schedule_state(ctx["registry"], row["name"]) or {}
-    return any((r.get("one_off_end") or {}).get("done") or (r.get("slot") == slot and r.get("legacy_run_state") == "completed") for r in (state.get("jobs") or {}).values())
+    claim = (state.get("slots") or {}).get(str(slot)) or {}
+    for job in (claim.get("retried"), claim.get("job")):
+        rec = (state.get("jobs") or {}).get(job or "") or {}
+        if (rec.get("legacy_run_state") if rec.get("legacy") else _run_state(ctx["registry"], rec.get("run_id"))) == "completed":
+            return True
+    return False
 
 
 def expected(row, ctx):
