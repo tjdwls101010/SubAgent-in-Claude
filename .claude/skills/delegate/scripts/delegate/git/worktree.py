@@ -135,8 +135,10 @@ def unlock_and_remove(repo, path, force):
 
 
 def _module_stores(repo):
-    """{name: git directory} of every submodule store the repository at `repo` keeps under its own modules/ (a linked checkout's own, which goes with it), nested ones as `<name>/modules/<name>`; a store outlives `submodule deinit`."""
+    """{name: git directory} of every submodule store the repository at `repo` keeps under its own modules/ (a linked checkout's own, which goes with it), nested ones as `<name>/modules/<name>`; a store outlives `submodule deinit`. None when they cannot all be listed."""
     code, out, _ = run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "modules")
+    if code != 0 or not out.strip():
+        return None
     stores = {}
 
     def walk(d, prefix):
@@ -150,27 +152,32 @@ def _module_stores(repo):
                 # A name with a slash is a directory per part.
                 walk(child, f"{prefix}{child.name}/")
 
-    if code == 0 and out.strip():
+    try:
         walk(Path(out.strip()), "")
+    except OSError:
+        return None
     return stores
 
 
 def submodule_commits_only_here(worktree, main):
-    """The submodules whose store goes with the checkout at `worktree` — each one under its own git directory's modules/, initialised or left by `submodule deinit`, and one cloned into the checkout with a .git directory of its own — holding a commit the main checkout's store of that submodule does not have: its checked-out commit, or what any of its own refs (a local branch, a tag, a stash; not a remote-tracking ref, which its remote holds) points at — since commits made there live only in this store, so removing the checkout loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
-    theirs = _module_stores(main)
-    pairs = [(name, store, theirs.get(name)) for name, store in _module_stores(worktree).items()]
+    """The submodules whose store goes with the checkout at `worktree` — each one under its own git directory's modules/, initialised or left by `submodule deinit`, and one cloned into the checkout with a .git directory of its own — holding a commit the main checkout's store of that submodule does not have: its checked-out commit, or what any of its refs points at (a local branch, a tag, a stash, and a remote-tracking ref too, whose branch the remote may have dropped) — since commits made there live only in this store, so removing the checkout loses them. A main checkout without that submodule, or git failing to tell or skipping a ref it cannot read, counts as not having it. None when the stores cannot all be listed."""
+    theirs, ours = _module_stores(main) or {}, _module_stores(worktree)
     code, out, _ = run_git(worktree, "ls-files", "-s", "-z")
-    for item in out.split("\0") if code == 0 else []:
+    if ours is None or code != 0:
+        return None
+    pairs = [(name, store, theirs.get(name)) for name, store in ours.items()]
+    for item in out.split("\0"):
         meta, _, rel = item.partition("\t")
         if meta.startswith("160000 ") and (Path(worktree) / rel / ".git").is_dir():
             there = Path(main) / rel / ".git"
             pairs.append((nfc(rel), Path(worktree) / rel / ".git", there if there.exists() else None))
     only = []
     for name, store, there in pairs:
-        code, refs, _ = run_git(worktree, f"--git-dir={store}", "for-each-ref", "--format=%(objectname) %(refname)")
-        _, head, _ = run_git(worktree, f"--git-dir={store}", "rev-parse", "--verify", "-q", "HEAD")
-        tips = {head.strip()} - {""} | {line.split(" ", 1)[0] for line in refs.splitlines() if line and not line.split(" ", 1)[-1].startswith("refs/remotes/")}
-        if code != 0 or there is None or any(run_git(worktree, f"--git-dir={there}", "cat-file", "-e", f"{tip}^{{commit}}")[0] != 0 for tip in sorted(tips)):
+        code, refs, warned = run_git(worktree, f"--git-dir={store}", "for-each-ref", "--format=%(objectname)")
+        head_code, head, _ = run_git(worktree, f"--git-dir={store}", "rev-parse", "--verify", "-q", "HEAD")
+        tips = {head.strip()} | {line for line in refs.splitlines() if line}
+        # git skips a ref it cannot read with only a warning ("ignoring broken ref"); what that ref holds is then unknown.
+        if code != 0 or warned.strip() or head_code != 0 or there is None or any(run_git(worktree, f"--git-dir={there}", "cat-file", "-e", f"{tip}^{{commit}}")[0] != 0 for tip in sorted(tips)):
             only.append(name)
     return only
 

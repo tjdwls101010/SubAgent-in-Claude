@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import unittest
+from pathlib import Path
 
 from support.harness import CLAUDE_RUN, FAST_TIMINGS, Sandbox, engine, git
 
@@ -518,3 +519,26 @@ class PostReview(Worktrees):
         self.assertEqual([k["index"] for k in out["kept"]], [1], out)
         self.assertIn("lib", out["kept"][0]["reason"])
         self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib"), "rev-parse", "feature"), work)
+
+    def test_a_commit_only_a_remote_tracking_ref_holds_is_kept(self):
+        # GPT review of the clean fixes, finding 3: the remote dropped the branch after the checkout's submodule fetched it.
+        wt = self.submodules("rt", "lib")
+        lib = self.root / "lib"
+        git(lib, "switch", "-q", "-c", "topic")
+        (lib / "lib.txt").write_text("topic\n")
+        git(lib, "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "topic")
+        work = git(lib, "rev-parse", "HEAD")
+        git(wt / "lib", "fetch", "-q", "origin")
+        git(lib, "switch", "-q", "-")
+        git(lib, "branch", "-q", "-D", "topic")
+        out = self.clean("rt")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib"), "rev-parse", "origin/topic"), work)
+
+    def test_a_ref_git_skips_keeps_the_checkout(self):
+        # GPT review of the clean fixes, finding 3: git warns "ignoring broken ref" and exits 0, so what that ref holds is not known.
+        wt = self.submodules("br", "lib")
+        (Path(self.store(wt, "lib")) / "refs" / "heads" / "broken").write_text("not a commit\n")
+        out = self.clean("br")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertTrue(wt.exists())

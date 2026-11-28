@@ -176,6 +176,9 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
             kept.append({**entry, "reason": f"{detached} commit(s) on a detached HEAD that no branch holds; put them on a branch first", "instead": f"git -C {path} branch <name>"})
             return
         stranded = submodule_commits_only_here(str(path), repo)
+        if stranded is None:
+            kept.append({**entry, "reason": "its submodules' stores could not all be listed, so whether they hold commits only here is not known"})
+            return
         if stranded:
             # A submodule's commits made in this checkout are stored only in it; they are kept whatever --force says, as detached commits are.
             kept.append({**entry, "reason": f"submodule(s) {', '.join(stranded)} hold commits your checkout's copy does not have, which removing it would lose", "instead": f"fetch them into your checkout first: git -C <your submodule> fetch {path}/<submodule> HEAD 'refs/*:refs/delegate/{group}-{slot['index']}/*'"})
