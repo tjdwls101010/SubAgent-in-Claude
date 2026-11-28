@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from delegate.github import list_workflow_files, parse_spec, workflow_states, written_by_legacy
+from delegate.github import list_workflow_files, parse_spec, render_workflow, workflow_states, written_by_legacy
 from delegate.launchd import agent_state, agents_dir
 from delegate.registry import schedule_state
 from delegate.schedule import dispatcher_label, legacy_dispatcher_label
@@ -33,6 +33,8 @@ def verify(j, ctx):
         want = expected(row, ctx)
         checks = {
             "new_header": bool(text) and not written_by_legacy(text),
+            # The whole file as the move published it — its cron, its steps' commands — not only the spec line a broken body still carries.
+            "published": bool(text) and bool(j.of(name).get("spec")) and text == render_workflow(j.of(name)["spec"]),
             "new_cli": bool(spec) and spec.get("cli") == ctx["cli"],
             "state": states.get(row["file"]) == ("active" if want == "active" else "disabled_manually"),
             "definition": bool(spec) and spec.get("definition") == (schedule_state(ctx["registry"], name) or {}).get("definition"),
