@@ -74,6 +74,16 @@ class Claims(unittest.TestCase):
         registry.update_job(self.reg, "nightly", "r-1", {"outcome": {"kind": "refused", "error": "no commit"}})
         self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-2", self.entry(), exact=True)["decision"], "skip")
 
+    def test_a_recorded_slot_recovered_as_its_retry_is_retried_once_after_it_is_pruned(self):
+        # The failed read-only slot is still in the record when its recovery takes its one retry, whose start is refused; then more slots than the record keeps run.
+        self.claim(S3, "1-1")
+        self.run_for("1-1", S3, "failed")
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry(), exact=True)["decision"], "retry")
+        registry.update_job(self.reg, "nightly", "r-1", {"outcome": {"kind": "refused", "error": "no commit"}})
+        for n in range(1, 61):
+            self.claim(S3 + n * 300, f"{n + 1}-1")
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-2", self.entry(), exact=True)["decision"], "skip")
+
     def old_registry(self, name, ended):
         """The `claude` skill's record of `name`: slot S3 filled by a read-only job whose run ended `ended`."""
         old = Path(self.reg) / "old"

@@ -181,6 +181,9 @@ def claim_slot(registry, name, slot, job, entry, exact=False):
             decision, previous = "first", None
         elif claim and claim.get("job") and latest and not claim.get("retried") and entry.get("profile") == "read-only" and _profile_of(registry, name, state, claim["job"]) == "read-only" and not _completed_or_live(registry, name, state, claim["job"]):
             claim["retried"] = job
+            if exact:
+                # A retry a recovery grants is kept as any recovered slot: if its start is refused it leaves no run, and a slot pruned from the record could not show it.
+                claim["exact"] = True
             rec["retry_of"] = claim["job"]
             decision, previous = "retry", _previous(registry, name, state, claim["job"])
         else:
