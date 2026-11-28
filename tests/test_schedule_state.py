@@ -64,6 +64,16 @@ class Claims(unittest.TestCase):
         self.assertNotIn(str(S3), registry.schedule_state(self.reg, "nightly")["slots"], "the record keeps only the newest slots")
         self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry(), exact=True)["decision"], "skip")
 
+    def test_a_pruned_slot_recovered_as_its_retry_is_retried_once(self):
+        # The failed read-only slot has left the record; its recovery is its one retry, whose start is refused: a second recovery is not another retry.
+        self.claim(S3, "1-1")
+        self.run_for("1-1", S3, "failed")
+        for n in range(1, 60):
+            self.claim(S3 + n * 300, f"{n + 1}-1")
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry(), exact=True)["decision"], "retry")
+        registry.update_job(self.reg, "nightly", "r-1", {"outcome": {"kind": "refused", "error": "no commit"}})
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-2", self.entry(), exact=True)["decision"], "skip")
+
     def test_an_older_slot_after_a_newer_one_is_skipped(self):
         # ② an hourly backup 70 minutes late: the 04:00 slot already ran, so the 03:00 trigger finds nothing to fill
         self.claim(S4, "1-1")

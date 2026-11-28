@@ -146,7 +146,7 @@ def _legacy_claim(state, name, slot, exact):
             rec = (old.get("jobs") or {}).get(job) or {}
             ended = next((m.get("state") for _, m in reversed(_schedule_runs(legacy, name)) if m["origin"].get("job") == job), None)
             state["jobs"][job] = {**rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
-    claim = {"job": claim["job"], "retried": claim.get("retried")}
+    claim = {"job": claim["job"], "retried": claim.get("retried"), **({"exact": True} if exact else {})}
     state["slots"][str(slot)] = claim
     return claim
 
@@ -162,7 +162,8 @@ def claim_slot(registry, name, slot, job, entry, exact=False):
             # A slot old enough to have been pruned from the record may still have run: the runs' own origins say.
             claim = _rebuild(registry, name)["slots"].get(str(slot)) or claim
             if (claim or {}).get("job"):
-                state["slots"][str(slot)] = claim
+                # Kept from now on as any recovered slot, so the retry it may grant is recorded for good.
+                claim = state["slots"][str(slot)] = {**claim, "exact": True}
         if state.get("legacy_registry"):
             claim = _legacy_claim(state, name, slot, exact) or claim
         rec = {**entry, "slot": slot, "at": now()}
