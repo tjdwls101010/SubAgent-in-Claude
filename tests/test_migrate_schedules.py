@@ -287,3 +287,36 @@ class MoveReview(MoveWorld):
         self.job("resume", now=later)
         self.assertEqual(len([c for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]), 2, "a claimed slot is not dispatched again")
         self.assertEqual([p for p in self.job("verify", now=later, expect=None)["problems"] if p.startswith("nightly")], [])
+
+    def run_one_off(self, name, when, run_id):
+        """The moved one-off's Run and Finish steps, as its workflow runs them at `when`."""
+        spec = self.spec_of(name)
+        d = self.root / "job" / run_id
+        d.mkdir(parents=True)
+        env = {"GITHUB_RUN_ID": run_id, "GITHUB_RUN_ATTEMPT": "1", "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REPOSITORY": REPO, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_STEP_SUMMARY": str(d / "summary"), "GITHUB_OUTPUT": str(d / "output"), "GH_TOKEN": "t", "DELEGATE_SCHEDULE_MODE": "run", "DELEGATE_SCHEDULE_SOURCE": "dispatcher", "DELEGATE_SCHEDULE_PROMPT": "x", "DELEGATE_TEST_NOW": str(when)}
+        args = ["--name", name, "--project", str(self.project), "--engine", "claude", "--profile", spec["profile"], "--model", spec["model"], "--effort", spec["effort"], "--timeout", "3600", "--at", spec["at"], "--timezone", spec["timezone"], "--workflow", f"{name}.yml", "--definition", spec["definition"]]
+        run = self.cli("__scheduled", "run", *args, env=env, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stdout)
+        self.cli("__scheduled", "finish", *args, env=env, timeout=120)
+
+    def test_a_one_off_is_done_only_by_its_own_slot(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        # An earlier one-off of the same name ended cleanly on this skill's side; the slot `later` waits for is still ahead.
+        registry.update_job(str(self.runs_dir()), "later", "5-1", {"trigger": "dispatcher", "slot": ts(16, 6), "one_off_end": {"disabled": True, "dispatcher": "removed", "done": True, "definition": "0th3r0ne"}})
+        self.job("resume")
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "active")
+        self.assertTrue(self.plist(NEW_PREFIX + "later"))
+
+    def test_a_one_off_completed_on_the_new_side_is_not_switched_back_on(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        when = int(datetime(2026, 12, 1, 6, 1, tzinfo=ZoneInfo(TZ)).timestamp())
+        # Its worker completed, but its Finish could not turn the workflow off.
+        self.world(fail_disable=True)
+        self.run_one_off("later", when, "8")
+        self.world(fail_disable=False)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "active")
+        self.job("rollback", "--only", "later", now=when + 3600)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", "its slot ran: back on the old side it stays off")
+        self.assertIsNone(self.plist(OLD_PREFIX + "later"))
