@@ -561,9 +561,15 @@ def _end_again(step, spec, ctx, registry, rec):
 def scheduled_finish(spec, env, write, job=None):
     """The Finish step, run after any end of the job (K20): stop a worker still alive, read what changed, clean up a worktree that holds nothing, keep the summary beside the run and post it to the job. Returns 1 only when the worker could not be confirmed stopped or the step summary could not be written; every other failure is a warning in the summary.
 
-    Run again for a job that already finished — in its job, or on this Mac with `job` naming it — it only tries a one-off's end again (`_end_again`)."""
-    step = Step(write)
+    Run again for a job that already finished — in its job, or on this Mac with `job` naming it — it only tries a one-off's end again (`_end_again`). On this Mac, a `job` with no record here or whose Finish has not run is refused before anything is touched: its worker may still be running in its job."""
     name, project = spec["name"], spec["project"]
+    if job and job_context(env) is None:
+        rec = (read_job(resolve_runs_dir(project), name, job) if Path(project).is_dir() else None) or {}
+        if not rec:
+            raise Refusal(f"schedule {name} has no job {job} recorded in {project}", instead="the job is `<run id>-<attempt>` of a run of this schedule's workflow")
+        if not rec.get("finished_at"):
+            raise Refusal(f"job {job} of schedule {name} has not finished: its Finish step has not run, and its worker may still be running in its job", instead="let the job end; its own Finish does the rest")
+    step = Step(write)
     ctx = job_context(env) or ({"job": job} if job else {})
     job = ctx.get("job")
     base = {"name": name, "timezone": spec["timezone"], "prompt": env.get("DELEGATE_SCHEDULE_PROMPT")}

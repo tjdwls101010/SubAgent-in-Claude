@@ -928,3 +928,23 @@ class HandOver(Job):
         (meta,) = self.scheduled_runs()
         self.assertEqual(meta["state"], "interrupted")
         self.assertEqual(self.worker_calls(), [], "the worker never ran")
+
+
+class FinishAgain(Job):
+    """`__scheduled finish --job` on this Mac completes the end of a job that finished, and touches nothing of one that did not."""
+
+    def test_a_job_still_running_is_left_alone(self):
+        env = self.job_env(prompt="x [[fake:sleep:60]]")
+        proc = subprocess.Popen([sys.executable, str(ENTRY), *self.args("run")], cwd=self.project, env={**self.env, **env}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, signal.SIGKILL))
+        self.wait_for(lambda: [m for m in self.scheduled_runs() if m["state"] == "running"], what="the worker to run")
+        again = self.cli(*self.args("finish"), "--job", "44006368956-1", timeout=120)
+        self.assertEqual(again.returncode, 1, again.stdout + again.stderr)
+        self.assertIn("has not finished", json.loads(again.stdout)["error"])
+        (meta,) = self.scheduled_runs()
+        self.assertEqual(meta["state"], "running", "the worker is not stopped")
+
+    def test_an_unknown_job_is_refused(self):
+        again = self.cli(*self.args("finish"), "--job", "1-1", timeout=120)
+        self.assertEqual(again.returncode, 1, again.stdout + again.stderr)
+        self.assertIn("1-1", json.loads(again.stdout)["error"])
