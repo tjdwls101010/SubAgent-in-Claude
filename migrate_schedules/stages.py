@@ -252,17 +252,27 @@ def rollback(j: Journal, row, ctx):
     note = {}
     new = schedule_state(ctx["registry"], name) or {}
     old_path = Path(ctx["project"]) / OLD_REGISTRY / ".schedules" / name / "state.json"
-    old = old_state(ctx["project"], name)
-    if old is not None:
-        fresh = {k: v for k, v in (new.get("slots") or {}).items() if k not in (old.get("slots") or {})}
-        if fresh:
-            old["slots"].update(fresh)
-            old["jobs"].update({job: {**rec, "moved_back": True} for job, rec in (new.get("jobs") or {}).items() if not rec.get("legacy")})
-            old["last_slot"] = max([int(k) for k in old["slots"]] or [0]) or None
-            tmp = old_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(old))
-            os.replace(tmp, old_path)
-            note["slots_moved_back"] = sorted(fresh)
+    # Both sides are drained, so nothing else writes the old record now. A schedule that never ran on the old side has none: it is made, with the definition its old workflow carries, so its Finish still knows the workflow as its own.
+    old = old_state(ctx["project"], name) or {"name": name, "last_slot": None, "slots": {}, "jobs": {}, "definition": row.get("definition")}
+    slots, changed = old.setdefault("slots", {}), []
+    for key, claim in (new.get("slots") or {}).items():
+        had = slots.get(key) or {}
+        if not had.get("job"):
+            slots[key] = {"job": claim.get("job"), "retried": claim.get("retried")}
+        elif claim.get("retried") and not had.get("retried"):
+            # A retry of an old slot the new side ran spends the slot's one retry.
+            slots[key] = {**had, "retried": claim["retried"]}
+        else:
+            continue
+        changed.append(key)
+    if changed:
+        old.setdefault("jobs", {}).update({job: {**rec, "moved_back": True} for job, rec in (new.get("jobs") or {}).items() if not rec.get("legacy")})
+        old["last_slot"] = max([int(k) for k in slots] or [0]) or None
+        old_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = old_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(old))
+        os.replace(tmp, old_path)
+        note["slots_moved_back"] = sorted(changed)
     old_text = (s.get("published") or {}).get("old_text") or (s.get("pending") or {}).get("old_text")
     if old_text:
         current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
