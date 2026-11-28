@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import plistlib
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -558,3 +560,20 @@ class MoveRepairReview(MoveWorld):
         self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", "its slot ran: it is ended as its Finish would have")
         self.assertIsNone(self.plist(NEW_PREFIX + "later"))
         self.assertEqual([p for p in self.job("verify", now=when + 3600, expect=None)["problems"] if p.startswith("later")], [])
+
+    def test_an_inventory_that_waited_for_the_lock_judges_as_of_when_it_got_it(self):
+        self.job("inventory")
+        at = int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())
+        with open(self.runs_dir() / ".migration" / "lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            # Started two seconds before `later` fires, it waits for another step; meanwhile `later` fires on the old side, completes and its Finish turns it off.
+            proc = subprocess.Popen([sys.executable, str(JOB), "inventory", "--project", str(self.project), "--cli", str(ENTRY), "--now", str(at - 2)], cwd=self.project, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.old_registry("later", {"last_slot": at, "slots": {str(at): {"job": "3-1", "retried": None}}, "jobs": {"3-1": {"trigger": "dispatcher", "profile": "full", "slot": at, "run_id": "r-later-1"}}, "definition": "d0d0d0d0"}, runs=[("r-later-1", "completed")])
+            w = self.world()
+            w["repos"][REPO]["workflows"]["later.yml"] = "disabled_manually"
+            self.world(w)
+            time.sleep(4)
+        out, err = proc.communicate(timeout=300)
+        self.assertEqual(proc.returncode, 0, out + err)
+        later = {r.get("name"): r for r in json.loads(out)["schedules"]}["later"]
+        self.assertEqual(later["class"], "finished", later)

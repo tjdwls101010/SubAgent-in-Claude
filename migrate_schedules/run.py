@@ -47,7 +47,7 @@ def context(args):
     # The job's clock: `--now` sets where it starts, and it moves on as the command runs, as time does.
     start, base = time.monotonic(), float(args.now) if args.now else None
     clock = (lambda: base + time.monotonic() - start) if base is not None else time.time
-    return {"project": project, "repo": facts["full_name"] or repo, "branch": facts["default_branch"], "registry": resolve_runs_dir(project), "cli": args.cli, "now": clock(), "clock": clock}
+    return {"project": project, "repo": facts["full_name"] or repo, "branch": facts["default_branch"], "registry": resolve_runs_dir(project), "cli": args.cli, "clock": clock}
 
 
 def main(argv=None):
@@ -60,6 +60,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     ctx = context(args)
     with held(ctx["registry"]):
+        # The step's time is read once it holds the lock: a step that waited for another judges what that one left as of now.
+        ctx["now"] = ctx["clock"]()
         return _step(args, ctx, Journal(ctx["registry"]))
 
 
