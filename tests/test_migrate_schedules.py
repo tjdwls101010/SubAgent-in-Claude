@@ -342,3 +342,14 @@ class MoveReview(MoveWorld):
         self.assertEqual(later["definition"], "d0d0d0d0", "and its Finish still knows the workflow as its own")
         nightly = json.loads((old / "nightly" / "state.json").read_text())
         self.assertEqual(nightly["slots"][str(old_slot)], {"job": "1-1", "retried": "9-2"}, "the slot's one retry is spent")
+
+    def test_a_rollback_leaves_a_workflow_changed_since_the_move_alone(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        # Someone changed the moved workflow afterwards (another prompt, through `schedule`).
+        edited = self.committed("nightly").replace("work for nightly", "other work for nightly")
+        self.plant("nightly.yml", edited)
+        out = self.job("rollback", "--only", "nightly", expect=1)
+        self.assertIn("changed", out["results"][0]["error"])
+        self.assertEqual(self.committed("nightly"), edited)
+        self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active", "and is not switched off on the way")
