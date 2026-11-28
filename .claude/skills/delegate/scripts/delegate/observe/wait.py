@@ -19,7 +19,7 @@ def failed(meta):
 def wait(run_dirs, timeout=None):
     """Block until every run in `run_dirs` has ended, a new attention appears on any of them, one of several ends in failure, or `timeout` seconds pass. Returns (reason, {run_dir: [attention…]}) with reason `ended`, `attention`, `member_failed` or `timeout`.
 
-    Attention already present when the wait begins does not end it, so waiting again waits for something new; a stall counts afresh from the start of the wait. A failure ends a wait on several runs at once, since the others may be worth stopping or redirecting while they still run (a group whose codex member ran out of its limit) — each failure once: a wait that returns for it marks it reported on the run, so a failure that came between two waits, or before the first, is still returned by the next one, and none is returned twice."""
+    Attention already present when the wait begins does not end it, so waiting again waits for something new; a stall counts afresh from the start of the wait. A failure ends a wait on several runs at once, since the others may be worth stopping or redirecting while they still run (a group whose codex member ran out of its limit) — each failure once: a wait that returns for it marks it reported on the run, so a failure that came between two waits, or before the first, is still returned by the next one, and none is returned twice, even by two waits under way at once."""
     t = timings()
     began = now()
     seen, failed_before = {}, set()
@@ -50,9 +50,13 @@ def wait(run_dirs, timeout=None):
         if fresh:
             return "attention", fresh
         if newly_failed and len(run_dirs) > 1:
+            claimed = []
             for d in newly_failed:
-                update_meta(d, lambda m: m.__setitem__("failure_reported", True))
-            return "member_failed", {}
+                # Checked and marked under the run's lock, so of two waits under way at once only one reports the failure.
+                update_meta(d, lambda m, d=d: None if m.get("failure_reported") else (claimed.append(d), m.__setitem__("failure_reported", True)))
+            failed_before.update(newly_failed)
+            if claimed:
+                return "member_failed", {}
         if timeout is not None and at - began >= timeout:
             return "timeout", {}
         time.sleep(max(t["poll"], 0.05))

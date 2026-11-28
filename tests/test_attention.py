@@ -95,6 +95,20 @@ class FailuresAroundWaits(MixedGroupWaits):
         again = self.wait_group("early", "--wait-timeout", "60")
         self.assertEqual(again["returned_because"], "ended", "reported once")
 
+    def test_two_waits_at_once_report_one_failure_once(self):
+        """PR④ GPT review: two group waits under way when a member fails — one of them reports it, the other waits on."""
+        import subprocess
+        import sys
+
+        from support.harness import ENTRY
+
+        f = self.tasks({"prompt": "c [[fake:sleep:30]]", "engine": "claude", "model": "claude-test-model", "effort": "high"}, {"prompt": "x", "engine": "codex", "model": "fake-big", "effort": "high"})
+        self.cli_json("batch", "--group", "two", "--tasks-file", f, timeout=120, env={"FAKE_CODEX_FIXTURE": str(CODEX_FIXTURES / "turn-failed.jsonl"), "FAKE_CODEX_EXIT": "1", "FAKE_CODEX_DELAY": "2"})
+        waiters = [subprocess.Popen([sys.executable, str(ENTRY), "result", "--group", "two", "--wait", "--wait-timeout", "8"], cwd=self.project, env=self.env, stdout=subprocess.PIPE, text=True) for _ in range(2)]
+        outs = [w.communicate(timeout=120)[0] for w in waiters]
+        self.assertEqual(sorted(json.loads(o.split("\n", 1)[0])["returned_because"] for o in outs), ["member_failed", "timeout"])
+        self.cli_json("stop", "--group", "two", timeout=120)
+
     def test_stopping_the_group_during_a_wait_is_not_a_failure(self):
         import subprocess
         import sys
