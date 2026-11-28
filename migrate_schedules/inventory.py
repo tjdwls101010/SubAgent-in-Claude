@@ -103,10 +103,14 @@ def inventory(project, repo, now):
     states = {f: w["state"] for f, w in index.items()}
     rows, specs = [], []
     for entry in list_workflow_files(repo, branch):
-        text = entry.get("text")
-        if not text or not written_by_legacy(text):
+        if not entry.get("text") or not written_by_legacy(entry["text"]):
             continue
         file = entry["file"]
+        # The class and the SHA every later step guards its commit with come from one version of the file: the listing may be older than this read.
+        current = read_workflow(repo, file, branch) or {}
+        text = current.get("text")
+        if not text or not written_by_legacy(text):
+            continue
         try:
             spec = parse_spec(text)
         except ValueError as e:
@@ -117,7 +121,6 @@ def inventory(project, repo, now):
             continue
         specs.append(spec)
         name = spec["name"]
-        current = read_workflow(repo, file, branch) or {}
         state = old_state(project, name)
         label = legacy_dispatcher_label(repo, name)
         wf_state = states.get(file)
