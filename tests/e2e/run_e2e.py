@@ -23,7 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SKILL = REPO / ".claude" / "skills" / "delegate"
 SUPPORT = REPO / "tests" / "support"
-PLAN = REPO / ".claude" / "plans" / "261127_delegate 스킬; codex·claude 작업자를 한 스킬로.md"
+PLAN = REPO / ".claude" / "plans" / "261127_delegate" / "261127_delegate 스킬; codex·claude 작업자를 한 스킬로.md"
 # The orchestrator is the real claude, found before the fakes go first on PATH for its workers.
 CLAUDE = shutil.which("claude")
 
