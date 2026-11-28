@@ -121,6 +121,20 @@ class Runs(unittest.TestCase):
         self.assertEqual(meta["state"], "orphaned")
         self.assertEqual(meta["undelivered"], ["uuid-1"])
 
+    def test_reap_lists_what_no_confirmation_recorded(self):
+        """GPT review of the send fixes: a supervisor killed inside `confirm`, before it recorded the write or right after, leaves `undelivered` exactly the message whose write is not on record."""
+        p = subprocess.Popen(["true"], start_new_session=True)
+        p.wait()
+        _, run_dir, _ = self.publish(supervisor_pid=p.pid, supervisor_pgid=p.pid, state="running")
+        reg.enqueue(run_dir, "u1", "one")
+        reg.enqueue(run_dir, "u2", "two")
+        reg.take(run_dir, lambda m: None, lambda: 0)
+        die_in(run_dir, "confirm", "u1", 1, "before")
+        die_in(run_dir, "confirm", "u2", 1, "after")
+        meta = reg.reap(run_dir)
+        self.assertEqual(meta["undelivered"], ["u1"])
+        self.assertEqual([m["uuid"] for m in meta["messages"] if m["delivered_at"]], ["u2"])
+
     def test_reap_leaves_a_live_supervisor_and_a_fresh_unsupervised_run(self):
         s = sleeper()
         self.addCleanup(s.kill)

@@ -122,7 +122,9 @@ def reap(run_dir):
     def orphan(m):
         if _abandoned(m):
             inbox = sorted(p.name for p in (Path(run_dir) / "inbox").glob("*.json")) if (Path(run_dir) / "inbox").is_dir() else []
-            m.update({"state": "orphaned", "ended_at": now(), "error": "the supervisor died before recording an outcome", "undelivered": [n.split("-", 1)[1][:-5] for n in inbox]})
+            # A payload whose write is already on record was left by a supervisor that died between recording it and removing the file.
+            confirmed = {x.get("uuid") for x in m.get("messages") or [] if x.get("delivered_at")}
+            m.update({"state": "orphaned", "ended_at": now(), "error": "the supervisor died before recording an outcome", "undelivered": [u for u in (n.split("-", 1)[1][:-5] for n in inbox) if u not in confirmed]})
 
     return update_meta(run_dir, orphan)
 

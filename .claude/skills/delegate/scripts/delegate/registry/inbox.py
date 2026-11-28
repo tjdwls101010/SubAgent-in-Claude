@@ -70,15 +70,15 @@ def take(run_dir, deliver, lines_read):
 
 
 def confirm(run_dir, uuid):
-    """Record that the message `uuid` is written to stdin in full: its `delivered_at`, and its payload gone from the inbox."""
+    """Record that the message `uuid` is written to stdin in full: its `delivered_at`, then its payload gone from the inbox — in that order, so a supervisor that dies in between leaves a payload whose write is on record, never a write that is not."""
     with run_lock(run_dir):
-        for f in _inbox(run_dir).glob(f"*-{uuid}.json") if _inbox(run_dir).is_dir() else []:
-            f.unlink(missing_ok=True)
         meta = read_meta(run_dir)
         for m in meta.get("messages") or []:
             if m.get("uuid") == uuid:
                 m["delivered_at"] = now()
         write_json(meta_path(run_dir), meta)
+        for f in _inbox(run_dir).glob(f"*-{uuid}.json") if _inbox(run_dir).is_dir() else []:
+            f.unlink(missing_ok=True)
 
 
 def close(run_dir, decide):
