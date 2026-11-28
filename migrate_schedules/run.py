@@ -1,7 +1,7 @@
 """Move the schedules the `claude` skill wrote in one repository over to the `delegate` skill (the plan's transition step 3). A maintenance job: the skill never imports it, and it reaches the skill only through its units' interfaces.
 
 Steps, each run with the same --project, each repeatable (what is done is skipped):
-    inventory   read only: every old schedule, its state on GitHub and this Mac, and its class (recurring, upcoming, finished, held); saved as the journal's inventory and printed
+    inventory   read only: every old schedule, its state on GitHub and this Mac, and its class (recurring, upcoming, finished, held); saved as the journal's inventory and printed. Run it again before each batch: a schedule a step has touched keeps the row it is moved by (listed under `kept`)
     freeze      the old dispatchers moved out of launchd, the workflows disabled, then wait for their queues to drain (exit 3 while one is not)
     state       the old state.json of each schedule written as this skill's, definition kept
     publish     each moved workflow rewritten by this skill's renderer in one commit; each finished one-off's workflow deleted
@@ -65,13 +65,7 @@ def main(argv=None):
 
 def _step(args, ctx, j):
     if args.step == "inventory":
-        moving = sorted(n for n, s in j.data["schedules"].items() if s and not s.get("rolled_back"))
-        if moving:
-            # A new inventory would see the moving schedules frozen or already rewritten, call them held or not list them, and every later step would pass them by.
-            print(json.dumps({"error": "a move is under way; the inventory it acts on stays as it is", "moving": moving, "instead": "finish the move (resume, verify) or roll it back first"}, ensure_ascii=False))
-            return 1
-        inv = inventory(ctx["project"], ctx["repo"], ctx["now"])
-        j.set_inventory(inv)
+        inv = j.set_inventory(inventory(ctx["project"], ctx["repo"], ctx["now"]))
         print(json.dumps(inv, ensure_ascii=False, indent=1))
         return 0
     if args.step == "verify":

@@ -191,11 +191,13 @@ class Move(MoveWorld):
 class MoveSafety(MoveWorld):
     """What a move must not do halfway (PR⑧ claude review): lose schedules to a second inventory, strand a one-off whose time passes while frozen, forget a commit it made, resume before it published, or report a rollback done that is not."""
 
-    def test_a_second_inventory_is_refused_while_a_move_is_under_way(self):
-        self.job("inventory")
+    def test_a_second_inventory_keeps_the_rows_of_a_move_under_way(self):
+        first = {r.get("name"): r for r in self.job("inventory")["schedules"]}
         self.through("freeze", "state")
-        refused = self.job("inventory", expect=1)
-        self.assertEqual(refused["moving"], ["done", "later", "nightly"])
+        again = self.job("inventory")
+        self.assertEqual(again["kept"], ["done", "later", "nightly"])
+        rows = {r.get("name"): r for r in again["schedules"]}
+        self.assertEqual({n: rows[n] for n in again["kept"]}, {n: first[n] for n in again["kept"]}, "frozen, they are not read again as held")
 
     def test_a_one_off_whose_time_passes_while_frozen_is_still_moved_and_run(self):
         self.job("inventory")
@@ -413,3 +415,21 @@ class MoveReview(MoveWorld):
         self.world(w)
         out = self.job("freeze", "--only", "nightly", expect=3)
         self.assertEqual(out["results"][0]["status"], "waiting")
+
+    def test_the_inventory_is_read_again_for_the_next_batch(self):
+        self.job("inventory")
+        for step in ("freeze", "state", "publish", "resume"):
+            self.job(step, "--only", "nightly")
+        # While the canary is watched, `later` fires on the old side: its worker completes and its Finish turns it off.
+        at = int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())
+        self.old_registry("later", {"last_slot": at, "slots": {str(at): {"job": "3-1", "retried": None}}, "jobs": {"3-1": {"trigger": "dispatcher", "profile": "full", "slot": at, "run_id": "r-later-1"}}, "definition": "d0d0d0d0"}, runs=[("r-later-1", "completed")])
+        w = self.world()
+        w["repos"][REPO]["workflows"]["later.yml"] = "disabled_manually"
+        self.world(w)
+        now = at + 3600
+        inv = {r.get("name"): r for r in self.job("inventory", now=now)["schedules"]}
+        self.assertEqual((inv["nightly"]["class"], inv["later"]["class"]), ("recurring", "finished"), "the moved canary keeps its row; the rest is read as it is now")
+        for step in ("freeze", "state", "publish", "resume"):
+            self.job(step, now=now)
+        self.assertNotIn("later.yml", self.files())
+        self.assertTrue(self.committed("nightly").startswith("# Written by the delegate skill's"))
