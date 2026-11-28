@@ -544,3 +544,17 @@ class MoveRepairReview(MoveWorld):
         # Moved again: its time passed, it is off, and a worker completed its slot — on this skill's side, which the old record now holds.
         inv = {r.get("name"): r for r in self.job("inventory", now=when + 7200)["schedules"]}
         self.assertEqual(inv["later"]["class"], "finished", inv["later"])
+
+    def test_resume_again_ends_a_one_off_its_finish_left_on(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        when = int(datetime(2026, 12, 1, 6, 1, tzinfo=ZoneInfo(TZ)).timestamp())
+        # Its worker completed, but its Finish could not turn the workflow off.
+        self.world(fail_disable=True)
+        self.run_one_off("later", when, "8")
+        self.world(fail_disable=False)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "active")
+        self.job("resume", "--only", "later", now=when + 3600)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", "its slot ran: it is ended as its Finish would have")
+        self.assertIsNone(self.plist(NEW_PREFIX + "later"))
+        self.assertEqual([p for p in self.job("verify", now=when + 3600, expect=None)["problems"] if p.startswith("later")], [])

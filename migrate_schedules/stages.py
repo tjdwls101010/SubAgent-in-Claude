@@ -194,6 +194,8 @@ def resume(j: Journal, row, ctx):
     if row["class"] == "finished":
         return
     if s.get("resumed"):
+        if s.get("resumed_state") == "active" and expected(row, ctx) == "disabled":
+            return _end_one_off(j, row, ctx)
         return _recover_again(row, ctx, s)
     missing = [step for step, key in (("freeze", "drained"), ("state", "state_moved"), ("publish", "published")) if not s.get(key)]
     if missing:
@@ -222,8 +224,18 @@ def resume(j: Journal, row, ctx):
         if open_:
             raise NotYet(f"{name}: slot(s) {', '.join(open_)} dispatched; run this step again once a run has claimed them")
     else:
-        set_workflow_enabled(ctx["repo"], row["file"], False)
-        j.update(name, resumed=True, resumed_state=want)
+        _end_one_off(j, row, ctx)
+
+
+def _end_one_off(j, row, ctx):
+    """A one-off whose slot ran, resumed or not: its workflow off and this skill's dispatcher gone, as its own Finish leaves it, without running it again — also when that Finish could not."""
+    set_workflow_enabled(ctx["repo"], row["file"], False)
+    label = dispatcher_label(ctx["repo"], row["name"])
+    if agent_state(label) != "missing":
+        gone = remove_agent(label)
+        if gone["status"] == "failed":
+            raise NotYet(f"{row['name']}: its dispatcher {label} could not be removed: {gone.get('error')}")
+    j.update(row["name"], resumed=True, resumed_state="disabled")
 
 
 def unclaimed(row, ctx, s):
