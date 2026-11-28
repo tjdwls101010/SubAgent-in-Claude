@@ -1,4 +1,4 @@
-# SubAgent in Claude
+# Agentic Delegate
 
 The `delegate` skill (`.claude/skills/delegate/`) of the `delegate` plugin: workers on two engines — GPT through the Codex CLI, Claude through headless Claude Code — as managed subagents.
 

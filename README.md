@@ -1,4 +1,4 @@
-# SubAgent in Claude
+# Agentic Delegate
 
 **Run background workers on two engines — GPT through the Codex CLI, Claude through headless Claude Code — as managed subagents from inside Claude Code.**
 
@@ -30,15 +30,15 @@ Requirements: macOS (Linux is untested), [`uv`](https://docs.astral.sh/uv/), git
 Install as a plugin:
 
 ```bash
-claude plugin marketplace add tjdwls101010/SubAgent-in-Claude
-claude plugin install delegate@subagent-in-claude
+claude plugin marketplace add tjdwls101010/Agentic-Delegate
+claude plugin install delegate@agentic-delegate
 ```
 
 Or link the skill folder for development:
 
 ```bash
-git clone https://github.com/tjdwls101010/SubAgent-in-Claude.git
-ln -s "$PWD/SubAgent-in-Claude/.claude/skills/delegate" ~/.claude/skills/delegate
+git clone https://github.com/tjdwls101010/Agentic-Delegate.git
+ln -s "$PWD/Agentic-Delegate/.claude/skills/delegate" ~/.claude/skills/delegate
 ```
 
 Pre-approve the skill and its one command form in `~/.claude/settings.json` (`permissions.allow`), with the skill's folder written out:
@@ -48,7 +48,7 @@ Pre-approve the skill and its one command form in `~/.claude/settings.json` (`pe
 "Bash(uv run \"/Users/you/.claude/skills/delegate/scripts/cli.py\" *)"
 ```
 
-For the plugin, the skill is `Skill(delegate:delegate)` and the folder `~/.claude/plugins/cache/subagent-in-claude/delegate/<version>/.claude/skills/delegate`. `doctor` prints the exact command form as `invocation`. First run:
+For the plugin, the skill is `Skill(delegate:delegate)` and the folder `~/.claude/plugins/cache/agentic-delegate/delegate/<version>/.claude/skills/delegate`. `doctor` prints the exact command form as `invocation`. First run:
 
 ```bash
 uv run "$SKILL_DIR/scripts/cli.py" doctor
