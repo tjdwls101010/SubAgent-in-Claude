@@ -138,6 +138,49 @@ class Claims(unittest.TestCase):
         self.assertEqual(registry.find_by_origin_job(self.reg, "3-1"), [])
 
 
+class TakenOver(unittest.TestCase):
+    """A schedule taken over from the `claude` skill, whose registry has the same format: a job its command still runs, or a slot its record no longer holds, is not run a second time by this skill."""
+
+    def setUp(self):
+        self.reg, self.old = tempfile.mkdtemp(), tempfile.mkdtemp()
+        for d in (self.reg, self.old):
+            self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+
+    def entry(self, profile="write"):
+        return {"trigger": "schedule", "mode": "run", "profile": profile}
+
+    def take_over(self):
+        with registry.schedule_lock(self.reg, "nightly"):
+            self.assertTrue(registry.take_over_legacy_state(self.reg, "nightly", self.old))
+
+    def old_run(self, job, slot, state="completed"):
+        origin = {"kind": "schedule", "name": "nightly", "trigger": "dispatcher", "slot": slot, "job": job}
+        registry.publish_run(self.old, f"s-{job}", lambda existing: None, lambda rid, d: {"state": state, "settings": {"profile": "write"}, "origin": origin})
+
+    def test_a_slot_the_old_command_fills_after_the_takeover_is_skipped(self):
+        # The old command filled 03:00; a job of it queued before the takeover runs after it and fills 04:00 in its own registry.
+        registry.claim_slot(self.old, "nightly", S3, "1-1", self.entry())
+        self.take_over()
+        self.assertEqual(registry.claim_slot(self.old, "nightly", S4, "2-1", self.entry())["decision"], "first")
+        self.old_run("2-1", S4)
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S4, "3-1", self.entry())["decision"], "skip")
+
+    def test_a_read_only_slot_the_old_command_failed_after_the_takeover_is_retried_once(self):
+        registry.claim_slot(self.old, "nightly", S3, "1-1", self.entry("read-only"))
+        self.take_over()
+        registry.claim_slot(self.old, "nightly", S4, "2-1", self.entry("read-only"))
+        self.old_run("2-1", S4, state="failed")
+        self.assertEqual([registry.claim_slot(self.reg, "nightly", S4, j, self.entry("read-only"))["decision"] for j in ("3-1", "4-1")], ["retry", "skip"])
+
+    def test_a_recovery_of_a_slot_the_old_record_pruned_is_skipped(self):
+        self.old_run("0-1", S3)
+        for n in range(61):
+            registry.claim_slot(self.old, "nightly", S3 + n * 300, f"{n}-1", self.entry())
+        self.assertNotIn(str(S3), registry.schedule_state(self.old, "nightly")["slots"])
+        self.take_over()
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-1", self.entry(), exact=True)["decision"], "skip")
+
+
 class Removal(unittest.TestCase):
     """A state directory is deleted for the schedule whose name its state.json records, to the letter: on a file system that ignores case, `Nightly` and `nightly` are one directory."""
 

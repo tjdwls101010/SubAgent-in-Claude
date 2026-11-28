@@ -127,6 +127,30 @@ def slot_unfilled(registry, name, slot):
         return not (claim or {}).get("job")
 
 
+def _legacy_claim(state, name, slot, exact):
+    """For a schedule taken over from the `claude` skill: what its registry says of `slot` when this one holds no job for it — a job its command queued before the takeover may have filled it since, and a slot its record pruned may still have run (its runs' origins say). The claim found, its jobs and the old latest slot are merged into `state`; returns the claim, or None. The old registry is only read."""
+    legacy = state["legacy_registry"]
+    with locked(Path(legacy) / ".locks" / f"schedule-{name}.lock"):
+        old = read_json(Path(legacy) / ".schedules" / name / "state.json") or {}
+    if old.get("last_slot") is not None:
+        state["last_slot"] = max(state["last_slot"] or old["last_slot"], old["last_slot"])
+    if ((state["slots"].get(str(slot))) or {}).get("job"):
+        return None
+    claim = (old.get("slots") or {}).get(str(slot))
+    if exact and not (claim or {}).get("job"):
+        claim = _rebuild(legacy, name)["slots"].get(str(slot)) or claim
+    if not (claim or {}).get("job"):
+        return None
+    for job in (claim["job"], claim.get("retried")):
+        if job and job not in state["jobs"]:
+            rec = (old.get("jobs") or {}).get(job) or {}
+            ended = next((m.get("state") for _, m in reversed(_schedule_runs(legacy, name)) if m["origin"].get("job") == job), None)
+            state["jobs"][job] = {**rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
+    claim = {"job": claim["job"], "retried": claim.get("retried")}
+    state["slots"][str(slot)] = claim
+    return claim
+
+
 def claim_slot(registry, name, slot, job, entry, exact=False):
     """Decide, under the schedule's lock, what an automatic trigger for `slot` does (K4), and record job `job` with `entry` (K19 ①). Returns `decision` — `first` (the slot was free and is now this job's), `retry` (the read-only job that filled it did not complete and has not been retried, and this job is read-only too: it is that slot's one retry) or `skip` (it is filled, or a later slot already ran) — and `previous`, the job that filled it with its run id, state and run URL. `entry` must carry `profile`; a skipped job is recorded with outcome `skipped`.
 
@@ -139,6 +163,8 @@ def claim_slot(registry, name, slot, job, entry, exact=False):
             claim = _rebuild(registry, name)["slots"].get(str(slot)) or claim
             if (claim or {}).get("job"):
                 state["slots"][str(slot)] = claim
+        if state.get("legacy_registry"):
+            claim = _legacy_claim(state, name, slot, exact) or claim
         rec = {**entry, "slot": slot, "at": now()}
         latest = slot == state["last_slot"] or exact
         if (exact and not (claim or {}).get("job")) or state["last_slot"] is None or slot > state["last_slot"]:
@@ -212,7 +238,8 @@ def take_over_legacy_state(registry, name, legacy_registry):
             for job, rec in (old.get("jobs") or {}).items():
                 ended = (read_json(Path(legacy_registry) / rec["run_id"] / "meta.json") or {}).get("state") if rec.get("run_id") else None
                 jobs[job] = {**rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
-            _save(registry, name, {"name": name, "last_slot": old.get("last_slot"), "slots": old.get("slots") or {}, "jobs": jobs, "definition": (current or {}).get("definition")})
+            # The old registry is kept: a job its command queued before now still claims its slot there, so this skill's claims read it too (`_legacy_claim`).
+            _save(registry, name, {"name": name, "last_slot": old.get("last_slot"), "slots": old.get("slots") or {}, "jobs": jobs, "definition": (current or {}).get("definition"), "legacy_registry": str(legacy_registry)})
         if old.get("definition") is not None:
             write_json(old_path, {**old, "definition": None})
         return True
