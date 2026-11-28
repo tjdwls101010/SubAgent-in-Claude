@@ -5,7 +5,7 @@ Steps, each run with the same --project, each repeatable (what is done is skippe
     freeze      the old dispatchers moved out of launchd, the workflows disabled, then wait for their queues to drain (exit 3 while one is not)
     state       the old state.json of each schedule written as this skill's, definition kept
     publish     each moved workflow rewritten by this skill's renderer in one commit; each finished one-off's workflow deleted
-    resume      each moved workflow put in its expected state, then this skill's dispatcher installed; slots missed while frozen dispatched with their own slot; run it again until each dispatched slot is claimed (exit 3 while a dispatched run is still on its way, and after an ended run that claimed nothing is dispatched again)
+    resume      each moved workflow put in its expected state, then this skill's dispatcher installed; slots missed while frozen dispatched with their own slot; run it again until each dispatched slot is claimed (exit 3 until then: after a dispatch, while a dispatched run is still on its way, and after an ended run that claimed nothing is dispatched again)
     rollback    back to the claude skill, schedule by schedule
     verify      the transition's checks: every inventoried schedule accounted for, no workflow or dispatcher left that runs the old skill
 
@@ -47,7 +47,7 @@ def context(args):
     # The job's clock: `--now` sets where it starts, and it moves on as the command runs, as time does.
     start, base = time.monotonic(), float(args.now) if args.now else None
     clock = (lambda: base + time.monotonic() - start) if base is not None else time.time
-    return {"project": project, "repo": facts["full_name"] or repo, "branch": facts["default_branch"], "registry": resolve_runs_dir(project), "cli": args.cli, "now": clock(), "clock": clock}
+    return {"project": project, "repo": facts["full_name"] or repo, "branch": facts["default_branch"], "registry": resolve_runs_dir(project), "cli": args.cli, "clock": clock}
 
 
 def main(argv=None):
@@ -60,6 +60,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     ctx = context(args)
     with held(ctx["registry"]):
+        # The step's time is read once it holds the lock: a step that waited for another judges what that one left as of now.
+        ctx["now"] = ctx["clock"]()
         return _step(args, ctx, Journal(ctx["registry"]))
 
 

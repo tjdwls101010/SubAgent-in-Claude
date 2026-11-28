@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import plistlib
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -111,7 +113,7 @@ class Move(MoveWorld):
         state = json.loads((self.runs_dir() / ".schedules" / "nightly" / "state.json").read_text())
         self.assertEqual((state["definition"], state["jobs"]["1-1"]["legacy"], state["jobs"]["1-1"]["legacy_run_state"]), ("d0d0d0d0", True, "completed"))
         later = T0 + 86400  # a day frozen: the next 03:00 passed meanwhile
-        self.job("resume", now=later)
+        self.job("resume", now=later, expect=3)
         self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active")
         self.assertEqual(self.plist(NEW_PREFIX + "nightly")["Label"], NEW_PREFIX + "nightly")
         dispatched = [c for c in self.gh_calls() if c["argv"][:2] == ["workflow", "run"]]
@@ -212,7 +214,7 @@ class MoveSafety(MoveWorld):
         self.through("freeze", "state")
         past = int(datetime(2026, 12, 1, 7, 0, tzinfo=ZoneInfo(TZ)).timestamp())
         self.job("publish", now=past)
-        self.job("resume", now=past)
+        self.job("resume", now=past, expect=3)
         dispatched = [c["argv"] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "later.yml"]]
         self.assertEqual([[a for a in c if a.startswith("slot=")] for c in dispatched], [[f"slot={int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())}"]])
 
@@ -273,7 +275,7 @@ class MoveReview(MoveWorld):
         self.through("freeze", "state", "publish")
         # Resume starts a second before the next 03:00 and, a gh call at a time, installs the dispatcher after it: neither the dispatcher nor the recovery covers that slot unless the recovery reaches up to the install.
         self.world(slow=1)
-        self.job("resume", now=ts(18, 3) - 1)
+        self.job("resume", now=ts(18, 3) - 1, expect=3)
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]])
 
@@ -281,7 +283,7 @@ class MoveReview(MoveWorld):
         self.job("inventory")
         self.through("freeze", "state", "publish")
         later, slot = T0 + 86400, ts(18, 3)
-        self.job("resume", now=later)
+        self.job("resume", now=later, expect=3)
         # GitHub took the dispatch, but its run ended (cancelled, failed to start) before it claimed the slot: the slot has not run.
         check = self.job("verify", now=later, expect=1)
         self.assertTrue(any(p.startswith("nightly:") and str(slot) in p for p in check["problems"]), check["problems"])
@@ -455,7 +457,7 @@ class MoveReview(MoveWorld):
             agents.chmod(0o755)
         later = T0 + 86400
         for step in ("freeze", "state", "publish", "resume"):
-            self.job(step, "--only", "nightly", now=later)
+            self.job(step, "--only", "nightly", now=later, expect=3 if step == "resume" else 0)
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]], "the slot missed since the first freeze unloaded it")
 
@@ -494,3 +496,142 @@ class MoveReview(MoveWorld):
         w["repos"][REPO]["workflows"]["stuck.yml"] = "disabled_manually"
         self.world(w)
         self.assertEqual(self.job("verify")["problems"], [], "switched off, it waits for a decision without firing the old command")
+
+
+class MoveRepairReview(MoveWorld):
+    run_one_off = MoveReview.run_one_off
+
+    """What the GPT review of the move's repairs found, each reproduced at the job's command line: a resume that says done before its slot runs, a rollback that undoes or overwrites what it should leave alone, a one-off left on, a stale inventory, a recovery the error message cannot lead to, and another repository's dispatcher taken."""
+
+    def test_the_first_resume_that_dispatches_a_slot_is_not_done(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        later, slot = T0 + 86400, ts(18, 3)
+        # The missed 03:00 is dispatched; until a run claims it, "exit 0 means done" would stop the operator before it ran.
+        out = self.job("resume", now=later, expect=3)
+        self.assertEqual({r["name"]: r["status"] for r in out["results"]}["nightly"], "waiting")
+        self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active")
+        self.assertTrue(self.plist(NEW_PREFIX + "nightly"))
+        registry.claim_slot(str(self.runs_dir()), "nightly", slot, "44000000001-1", {"trigger": "recovery", "profile": "full"}, exact=True)
+        self.job("resume", now=later)
+        self.assertEqual(len([c for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]), 1, "claimed after the first dispatch, it is not dispatched again")
+
+    def test_a_rollback_refused_for_a_changed_workflow_keeps_its_dispatcher(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        edited = self.committed("nightly").replace("work for nightly", "other work for nightly")
+        self.plant("nightly.yml", edited)
+        out = self.job("rollback", "--only", "nightly", expect=1)
+        self.assertIn("changed", out["results"][0]["error"])
+        self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active")
+        self.assertTrue(self.plist(NEW_PREFIX + "nightly"), "a rollback that touches nothing leaves the active workflow its dispatcher")
+
+    def test_a_rollback_does_not_overwrite_a_change_made_while_it_runs(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        # Someone's `schedule` lands right after the rollback checked the file was the move's.
+        edited = self.committed("nightly").replace("work for nightly", "other work for nightly")
+        self.world(commit_on_disable={"path": ".github/workflows/nightly.yml", "text": edited})
+        out = self.job("rollback", "--only", "nightly", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assertEqual(self.committed("nightly"), edited, "the change made meanwhile is kept")
+
+    def test_a_one_off_completed_on_the_new_side_is_finished_after_a_rollback(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        when = int(datetime(2026, 12, 1, 6, 1, tzinfo=ZoneInfo(TZ)).timestamp())
+        self.run_one_off("later", when, "8")
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually")
+        self.job("rollback", "--only", "later", now=when + 3600)
+        # Moved again: its time passed, it is off, and a worker completed its slot — on this skill's side, which the old record now holds.
+        inv = {r.get("name"): r for r in self.job("inventory", now=when + 7200)["schedules"]}
+        self.assertEqual(inv["later"]["class"], "finished", inv["later"])
+
+    def test_resume_again_ends_a_one_off_its_finish_left_on(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        when = int(datetime(2026, 12, 1, 6, 1, tzinfo=ZoneInfo(TZ)).timestamp())
+        # Its worker completed, but its Finish could not turn the workflow off.
+        self.world(fail_disable=True)
+        self.run_one_off("later", when, "8")
+        self.world(fail_disable=False)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "active")
+        self.job("resume", "--only", "later", now=when + 3600)
+        self.assertEqual(self.repo()["workflows"]["later.yml"], "disabled_manually", "its slot ran: it is ended as its Finish would have")
+        self.assertIsNone(self.plist(NEW_PREFIX + "later"))
+        self.assertEqual([p for p in self.job("verify", now=when + 3600, expect=None)["problems"] if p.startswith("later")], [])
+
+    def test_an_inventory_that_waited_for_the_lock_judges_as_of_when_it_got_it(self):
+        self.job("inventory")
+        at = int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())
+        with open(self.runs_dir() / ".migration" / "lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            # Started two seconds before `later` fires, it waits for another step; meanwhile `later` fires on the old side, completes and its Finish turns it off.
+            proc = subprocess.Popen([sys.executable, str(JOB), "inventory", "--project", str(self.project), "--cli", str(ENTRY), "--now", str(at - 2)], cwd=self.project, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.old_registry("later", {"last_slot": at, "slots": {str(at): {"job": "3-1", "retried": None}}, "jobs": {"3-1": {"trigger": "dispatcher", "profile": "full", "slot": at, "run_id": "r-later-1"}}, "definition": "d0d0d0d0"}, runs=[("r-later-1", "completed")])
+            w = self.world()
+            w["repos"][REPO]["workflows"]["later.yml"] = "disabled_manually"
+            self.world(w)
+            time.sleep(4)
+        out, err = proc.communicate(timeout=300)
+        self.assertEqual(proc.returncode, 0, out + err)
+        later = {r.get("name"): r for r in json.loads(out)["schedules"]}["later"]
+        self.assertEqual(later["class"], "finished", later)
+
+    def test_the_missing_backups_advice_finishes_the_rollback(self):
+        label = OLD_PREFIX + "nightly"
+        original = (self.home / "Library" / "LaunchAgents" / f"{label}.plist").read_bytes()
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        (self.runs_dir() / ".migration" / "backup" / f"{label}.plist").unlink()
+        error = self.job("rollback", "--only", "nightly", expect=1)["results"][0]["error"]
+        # Done as the message says: the original plist put back where it names.
+        where = Path(error.split("restore the plist to ", 1)[1].split(" and run", 1)[0])
+        where.write_bytes(original)
+        self.assertEqual(self.job("rollback", "--only", "nightly")["results"][0]["status"], "done")
+        self.assertIn(label, json.loads((self.lc_state / "loaded.json").read_text()), "the old dispatcher is loaded again")
+
+    def share_a_label(self, prefix):
+        """The plist of schedule `b` of `someone/project.a` at the path of the label it shares with this repository's schedule `a.b` (`<prefix>a.b`), loaded."""
+        label = prefix + "a.b"
+        path, data = self.plant_plist(label=label, repo="someone/project.a")
+        loaded = self.lc_state / "loaded.json"
+        (loaded).write_text(json.dumps({**(json.loads(loaded.read_text()) if loaded.exists() else {}), label: str(path)}))
+        return path, data
+
+    def assert_untouched(self, path, data, label):
+        self.assertEqual(path.read_bytes(), data, "another repository's dispatcher is left as it is")
+        self.assertIn(label, json.loads((self.lc_state / "loaded.json").read_text()), "and stays loaded")
+
+    def test_freeze_leaves_another_repositorys_dispatcher_alone(self):
+        self.plant_old("a.b", self.legacy_text("a.b", cron="0 4 * * *"))
+        path, data = self.share_a_label(OLD_PREFIX)
+        self.job("inventory")
+        out = self.job("freeze", "--only", "a.b", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assert_untouched(path, data, OLD_PREFIX + "a.b")
+        self.assertFalse((self.runs_dir() / ".migration" / "backup" / f"{OLD_PREFIX}a.b.plist").exists())
+        self.assertEqual(self.repo()["workflows"]["a.b.yml"], "active", "nothing of the schedule is frozen")
+
+    def test_resume_and_rollback_leave_another_repositorys_new_dispatcher_alone(self):
+        self.plant_old("a.b", self.legacy_text("a.b", cron="0 4 * * *"))
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        # Meanwhile `someone/project.a` moved its schedule `b`: its new dispatcher has the label this one's would get.
+        path, data = self.share_a_label(NEW_PREFIX)
+        out = self.job("resume", "--only", "a.b", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assert_untouched(path, data, NEW_PREFIX + "a.b")
+        self.assertEqual(self.repo()["workflows"]["a.b.yml"], "disabled_manually", "not switched on without a dispatcher")
+        self.job("rollback", "--only", "a.b")
+        self.assert_untouched(path, data, NEW_PREFIX + "a.b")
+        self.assertEqual(self.plist(OLD_PREFIX + "a.b")["ProgramArguments"][5], REPO, "its own old dispatcher is back")
+
+    def test_a_rollback_does_not_restore_over_another_repositorys_dispatcher(self):
+        self.plant_old("a.b", self.legacy_text("a.b", cron="0 4 * * *"))
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        path, data = self.share_a_label(OLD_PREFIX)
+        out = self.job("rollback", "--only", "a.b", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assert_untouched(path, data, OLD_PREFIX + "a.b")

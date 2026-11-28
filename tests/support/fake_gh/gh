@@ -10,6 +10,7 @@ world.json: {"auth": "ok" | "none" | "noscope", "repos": {"owner/name": {"privat
   offline: a Contents PUT fails as gh does without a network: a message on stderr, no HTTP status.
   fail_dispatch: `gh workflow run` fails as GitHub answering 500 does.
   slow: every call first sleeps this many seconds.
+  commit_on_disable: {"path", "text"}: someone else's commit of that file, landing once as the next workflow is disabled — a change made between a check of the file and a write that follows it.
   A repository may carry "pulls": [{"number", "head" (a commit sha), "base" (default: the default branch), "base_repo", "state" (open or closed), "merged"}] — what `commits/<sha>/pulls` answers, each in the shape of the captured `commit-pulls-open` or `commit-pulls-merged` — and "unknown_commits": shas GitHub answers 422 "No commit found" for (captured).
   A repository may carry "git": the path of a bare git repository standing in for GitHub's copy. A Contents PUT or DELETE then also commits the change there, with the request's message, and answers with that commit's sha, so a checkout whose origin is that repository can fetch what the API committed.
 
@@ -318,6 +319,9 @@ if w:
     if action:
         if world.get("fail_disable") and action == "disable":
             error("workflow-404", "Resource not accessible by integration", 403)
+        landing = world.pop("commit_on_disable", None) if action == "disable" else None
+        if landing:
+            repo.setdefault("files", {})[landing["path"]] = {"text": landing["text"], "sha": sha_of(landing["text"])}
         states[file] = "active" if action == "enable" else "disabled_manually"
         save()
         answer("workflow-enable")
