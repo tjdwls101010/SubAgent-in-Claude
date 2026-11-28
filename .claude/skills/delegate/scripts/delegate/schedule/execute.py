@@ -545,7 +545,12 @@ def _repository_of(registry, rec):
 
 
 def _end_again(step, spec, ctx, registry, rec):
-    """Finish run again for a job that already finished: only a one-off's end (disabling its workflow, removing its dispatcher) is tried again — no worker is stopped or started and no summary rewritten — so it can be repeated until the end holds. Exits 1 while something of the end is still undone."""
+    """Finish run again for a job that already finished: only a one-off's end (disabling its workflow, removing its dispatcher) is tried again — no worker is stopped or started and no summary rewritten — so it can be repeated until the end holds; once it has held, nothing is done again. Exits 1 while something of the end is still undone."""
+    end = rec.get("one_off_end") or {}
+    if end.get("done"):
+        # A workflow enabled again since, as the summary says to run it by hand, is someone's choice, not an end left undone.
+        step.say(json.dumps({"job": ctx["job"], "finished_before": True, "one_off_end": end}, ensure_ascii=False))
+        return 0
     state = None
     if rec.get("run_id"):
         with contextlib.suppress(Refusal, OSError):

@@ -1143,6 +1143,20 @@ class OneOff(Scheduling):
         self.assertEqual(self.wf_state(), "active", "the one-off scheduled since is not the old job's")
         self.assertIsNotNone(self.plist())
 
+    def test_finish_run_again_after_the_end_held_leaves_a_workflow_enabled_since(self):
+        # The one-off ended in full; someone enabled its workflow again, as the summary says, to run it by hand; then its Finish is run again.
+        spec = self.make()
+        run, finish, summary = self.job(spec, "1", "x")
+        self.assertEqual(self.wf_state(), "disabled_manually")
+        w = self.world()
+        w["repos"][REPO]["workflows"]["nightly.yml"] = "active"
+        self.world(w)
+        args = ["--name", spec["name"], "--project", str(self.project), "--profile", spec["profile"], "--model", spec["model"], "--effort", spec["effort"], "--timeout", str(spec["timeout"]), "--at", spec["at"], "--timezone", spec["timezone"], "--workflow", "nightly.yml", "--definition", spec["definition"]]
+        again = self.cli("__scheduled", "finish", *args, "--job", "1-1", env={"DELEGATE_TEST_NOW": str(AFTER + 600)}, timeout=120)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn('"finished_before": true', again.stdout)
+        self.assertEqual(self.wf_state(), "active", "an end that already held is not done again")
+
     def test_a_failed_disable_names_the_command(self):
         spec = self.make()
         self.world(fail_disable=True)
