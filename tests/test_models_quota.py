@@ -91,16 +91,41 @@ class CodexLimit(Sandbox):
         self.wait_state(out["run_id"])
 
     def test_an_app_server_that_never_answers_delays_a_start_but_refuses_nothing(self):
+        heard = self.root / "app-server.log"
         began = time.time()
-        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!silent"}, timeout=60)
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!silent", "FAKE_CODEX_APP_SERVER_LOG": str(heard)}, timeout=60)
         self.wait_state(out["run_id"])
         self.assertLess(time.time() - began, 40)
+        self.assertIn("account/rateLimits/read", heard.read_text().split() if heard.exists() else [], "the limits were asked for, and the start went on without the answer")
 
     def test_ordinary_use_the_server_allows_is_not_exhausted(self):
         path = self.root / "rl.json"
         exhausted_answer(path)
         answer = json.loads(path.read_text())
         answer["result"]["ordinaryUsageAllowed"] = True  # a full window paid past with credits
+        path.write_text(json.dumps(answer))
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
+        self.wait_state(out["run_id"])
+
+    def test_an_allowance_the_server_cannot_say_refuses_nothing(self):
+        # `ordinaryUsageAllowed: null` is the server saying it cannot tell (codex 0.167.1's schema: "Null means unavailable; clients must not infer recovery from percentages or reset times"), so a full window alone is no verdict.
+        path = self.root / "rl.json"
+        exhausted_answer(path)
+        answer = json.loads(path.read_text())
+        answer["result"]["ordinaryUsageAllowed"] = None
+        path.write_text(json.dumps(answer))
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
+        self.wait_state(out["run_id"])
+
+    def test_use_refused_for_depleted_credits_names_no_window_to_wait_for(self):
+        # Ordinary use refused because the workspace's credits ran out, with neither window full: neither window's reset is when it comes back, so nothing up front says until when.
+        path = self.root / "rl.json"
+        exhausted_answer(path)
+        answer = json.loads(path.read_text())
+        rl = answer["result"]["rateLimits"]
+        rl["primary"]["usedPercent"] = 20
+        rl["rateLimitReachedType"] = "workspace_owner_credits_depleted"
+        answer["result"]["rateLimitsByLimitId"] = {"codex": rl}
         path.write_text(json.dumps(answer))
         out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
         self.wait_state(out["run_id"])
@@ -114,6 +139,28 @@ class CodexLimit(Sandbox):
         self.assertEqual((out["error"], out["source"]), ("quota_exhausted", "rollout"))
         q = self.cli_json("models", "--engine", "codex", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})["engines"]["codex"]["quota"]
         self.assertEqual([(w["kind"], w["used_percent"]) for w in q["windows"]], [("5h", 100.0), ("7d", 44.0)])
+
+    def test_a_rollout_of_another_bucket_says_nothing_of_ordinary_use(self):
+        ordinary = self.fresh_rollout(age=60)
+        ordinary["payload"]["rate_limits"]["primary"]["used_percent"] = 12.0
+        other = self.fresh_rollout()
+        other["payload"]["rate_limits"]["limit_id"] = "premium"
+        rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "28"
+        rollouts.mkdir(parents=True)
+        (rollouts / "rollout-2026-11-28T01-47-16-x.jsonl").write_text(json.dumps(ordinary) + "\n" + json.dumps(other) + "\n")
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})
+        self.wait_state(out["run_id"])
+        q = self.cli_json("models", "--engine", "codex", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})["engines"]["codex"]["quota"]
+        self.assertEqual([(w["kind"], w["used_percent"]) for w in q["windows"]], [("5h", 12.0), ("7d", 44.0)], "the ordinary bucket's own reading")
+
+    def test_a_full_rollout_window_that_credits_pay_past_refuses_nothing(self):
+        event = self.fresh_rollout()
+        event["payload"]["rate_limits"]["credits"]["has_credits"] = True
+        rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "28"
+        rollouts.mkdir(parents=True)
+        (rollouts / "rollout-2026-11-28T01-47-16-x.jsonl").write_text(json.dumps(event) + "\n")
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!fail"})
+        self.wait_state(out["run_id"])
 
     def test_a_turn_the_limit_ends_is_quota_exhausted_with_the_way_over(self):
         out = self.codex("start", "x", env={"FAKE_CODEX_FIXTURE": str(CODEX_FIXTURES / "usage-limit.jsonl"), "FAKE_CODEX_EXIT": "1"})
@@ -204,3 +251,22 @@ class ClaudeLimit(Sandbox):
         self.assertEqual(row["state"], "quota_exhausted")
         refused = self.cli_json("start", *CLAUDE_RUN, "again", expect=1)
         self.assertEqual((refused["error"], refused["source"]), ("quota_exhausted", "a run's rate_limit_event"), "a fresh event of this registry is read before /usage")
+
+    def test_a_runs_event_reports_each_window_with_its_reset(self):
+        out = self.start("x")
+        self.assertEqual(self.wait_state(out["run_id"])["state"], "completed")
+        q = self.cli_json("models", "--engine", "claude", timeout=120)["engines"]["claude"]["quota"]
+        self.assertEqual(q["source"], "a run's rate_limit_event")
+        # The captured event's unifiedWindows (basic_write.jsonl): five_hour 0.02 until 1793418000, seven_day 0.42 until 1793703600.
+        self.assertEqual([(w["kind"], w["used_percent"], w.get("resets_at")) for w in q["windows"]], [("five_hour", 2, 1793418000), ("seven_day", 42, 1793703600)])
+
+    def test_another_accounts_rejection_leaves_the_answer_to_usage(self):
+        out = self.start("x [[fake:ratelimit:rejected]] [[fake:error]]")
+        self.assertEqual(self.wait_state(out["run_id"])["state"], "quota_exhausted")
+        # Logged in since to another account, on another plan, whose /usage has room.
+        other = {"FAKE_CLAUDE_AUTH": json.dumps({"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "pro"}), **self.usage(12)}
+        ok = self.start("on the other account", env=other)
+        self.wait_state(ok["run_id"])
+        # A login that cannot be read cannot be matched to the event's either.
+        ok = self.start("login unreadable", env={"FAKE_CLAUDE_AUTH": "not json", **self.usage(12)})
+        self.wait_state(ok["run_id"])

@@ -370,12 +370,19 @@ def quota_view(obs, source, observed_at, at=None):
         return {"state": "unknown", "scope": None, "windows": [], "observed_at": None, "source": None, "why": "neither `codex app-server` nor a rollout of this CODEX_HOME said"}
     windows = [w for w in obs.get("windows") or [] if not w.get("resets_at") or w["resets_at"] > at]
     full = [w for w in windows if (w.get("used_percent") or 0) >= 100]
-    # The server's own word wins: ordinary use allowed means a full window is paid past (credits) or about to reset.
-    exhausted = obs.get("allowed") is not True and (bool(full) or obs.get("allowed") is False)
-    out = {"state": "exhausted" if exhausted else ("ok" if windows or obs.get("allowed") else "unknown"), "scope": f"ordinary usage (limit {obs.get('limit_id')})", "windows": windows, "observed_at": observed_at, "source": source, "plan": obs.get("plan")}
+    if source == "app-server":
+        # The server's own word decides: allowed means a full window is paid past (credits) or about to reset, and null is the server saying it cannot tell, which no percentage settles.
+        exhausted = obs.get("allowed") is False
+        state = "exhausted" if exhausted else ("ok" if obs.get("allowed") else "unknown")
+    else:
+        # A rollout carries no verdict: a full window is one only when the event says no credits pay past it.
+        exhausted = bool(full) and obs.get("credits_left") is False
+        state = "exhausted" if exhausted else ("ok" if windows else "unknown")
+    out = {"state": state, "scope": f"ordinary usage (limit {obs.get('limit_id')})", "windows": windows, "observed_at": observed_at, "source": source, "plan": obs.get("plan")}
     if exhausted:
-        resets = [w["resets_at"] for w in (full or windows) if w.get("resets_at")]
-        out["resets_at"] = max(resets) if full else (min(resets) if resets else None)
+        # Only a full window's reset says when use comes back; use refused with no window full (credits run out) names no time.
+        resets = [w["resets_at"] for w in full if w.get("resets_at")]
+        out["resets_at"] = max(resets) if resets else None
     return out
 
 

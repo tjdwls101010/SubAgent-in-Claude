@@ -17,6 +17,8 @@ from .config import codex_home
 
 # The window lengths Codex reports, in minutes, by the name the skill gives them.
 WINDOWS = {300: "5h", 10080: "7d"}
+# The limit id of the account's ordinary usage, the one bucket every catalog model draws on (measured: the only one with windows).
+ORDINARY = "codex"
 APP_SERVER_SECONDS = 10.0
 ROLLOUTS_SCANNED = 30
 
@@ -42,16 +44,17 @@ def from_app_server(answer):
 
 
 def from_rollout_event(event):
-    """A rollout `token_count` event's `rate_limits` as the same shape (`allowed` unknown), with `observed_at` from the event's timestamp; None for another event or a limit without windows."""
+    """A rollout `token_count` event's `rate_limits` as the same shape (`allowed` unknown), with `observed_at` from the event's timestamp and `credits_left` (credits or an unlimited plan pay past a full window; None when the event does not say); None for another event, another bucket's limit (or one that names none) or a limit without windows."""
     payload = event.get("payload") if isinstance(event, dict) else None
     rl = payload.get("rate_limits") if isinstance(payload, dict) else None
-    if not isinstance(rl, dict) or (rl.get("primary") is None and rl.get("secondary") is None):
+    if not isinstance(rl, dict) or rl.get("limit_id") != ORDINARY or (rl.get("primary") is None and rl.get("secondary") is None):
         return None
+    credits = rl.get("credits")
     try:
         observed = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")).timestamp()
     except (KeyError, ValueError, AttributeError):
         observed = None
-    return {"limit_id": rl.get("limit_id"), "allowed": None, "reached": rl.get("rate_limit_reached_type"), "plan": rl.get("plan_type"), "windows": _windows(rl.get("primary"), rl.get("secondary"), percent="used_percent", minutes="window_minutes", resets="resets_at"), "observed_at": observed}
+    return {"limit_id": rl.get("limit_id"), "allowed": None, "reached": rl.get("rate_limit_reached_type"), "plan": rl.get("plan_type"), "windows": _windows(rl.get("primary"), rl.get("secondary"), percent="used_percent", minutes="window_minutes", resets="resets_at"), "observed_at": observed, "credits_left": bool(credits.get("has_credits") or credits.get("unlimited")) if isinstance(credits, dict) else None}
 
 
 def ask_app_server(timeout=APP_SERVER_SECONDS):
@@ -102,7 +105,7 @@ def ask_app_server(timeout=APP_SERVER_SECONDS):
 
 
 def read_rollouts(home=None, scanned=ROLLOUTS_SCANNED):
-    """The newest windowed rate limit any rollout under `home`/sessions recorded, or None."""
+    """The newest windowed ordinary-usage limit any rollout under `home`/sessions recorded, or None."""
     sessions = Path(home or codex_home()) / "sessions"
     try:
         files = sorted(sessions.glob("**/rollout-*.jsonl"), key=lambda p: p.stat().st_mtime)[-scanned:]

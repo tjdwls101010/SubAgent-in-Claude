@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A stand-in for the `claude` CLI, first on PATH in tests.
 
-It records every invocation (argv, cwd, environment, the stdin messages it read) under $FAKE_CLAUDE_STATE/calls/ — `-p /usage` and `-p /model` under queries/ — and answers `-p --input-format stream-json` sessions with events whose shapes are copied from real captures in $FAKE_CLAUDE_FIXTURES. What a turn does is chosen by markers in the message text, `[[fake:<name>]]` or `[[fake:<name>:<arg>]]`:
+It records every invocation (argv, cwd, environment, the stdin messages it read) under $FAKE_CLAUDE_STATE/calls/ — `-p /usage`, `-p /model` and `auth status` under queries/ — and answers `-p --input-format stream-json` sessions with events whose shapes are copied from real captures in $FAKE_CLAUDE_FIXTURES. What a turn does is chosen by markers in the message text, `[[fake:<name>]]` or `[[fake:<name>:<arg>]]`:
 
   reply:TEXT        answer with TEXT (default: "ok: <message>")
   sleep:N           a Bash call that runs N seconds; a message arriving meanwhile with priority "now" aborts the turn, otherwise it joins the same turn
@@ -81,8 +81,8 @@ T = {
     "error_result": fixture("sigint.jsonl", 5),
 }
 
-# A query that starts no session (`-p /usage`, `-p /model`) is recorded apart, under queries/, so what a test reads as the worker calls is only those.
-QUERY = "-p" in sys.argv and sys.argv[-1] in ("/usage", "/model")
+# A query that starts no session (`-p /usage`, `-p /model`, `auth status`) is recorded apart, under queries/, so what a test reads as the worker calls is only those.
+QUERY = ("-p" in sys.argv and sys.argv[-1] in ("/usage", "/model")) or sys.argv[1:3] == ["auth", "status"]
 calls_dir = STATE / ("queries" if QUERY else "calls")
 calls_dir.mkdir(parents=True, exist_ok=True)
 record = {"argv": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ), "pid": os.getpid(), "messages": [], "started": time.time()}
