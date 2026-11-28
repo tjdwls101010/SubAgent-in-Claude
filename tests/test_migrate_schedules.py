@@ -111,7 +111,7 @@ class Move(MoveWorld):
         state = json.loads((self.runs_dir() / ".schedules" / "nightly" / "state.json").read_text())
         self.assertEqual((state["definition"], state["jobs"]["1-1"]["legacy"], state["jobs"]["1-1"]["legacy_run_state"]), ("d0d0d0d0", True, "completed"))
         later = T0 + 86400  # a day frozen: the next 03:00 passed meanwhile
-        self.job("resume", now=later)
+        self.job("resume", now=later, expect=3)
         self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active")
         self.assertEqual(self.plist(NEW_PREFIX + "nightly")["Label"], NEW_PREFIX + "nightly")
         dispatched = [c for c in self.gh_calls() if c["argv"][:2] == ["workflow", "run"]]
@@ -212,7 +212,7 @@ class MoveSafety(MoveWorld):
         self.through("freeze", "state")
         past = int(datetime(2026, 12, 1, 7, 0, tzinfo=ZoneInfo(TZ)).timestamp())
         self.job("publish", now=past)
-        self.job("resume", now=past)
+        self.job("resume", now=past, expect=3)
         dispatched = [c["argv"] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "later.yml"]]
         self.assertEqual([[a for a in c if a.startswith("slot=")] for c in dispatched], [[f"slot={int(datetime(2026, 12, 1, 6, 0, tzinfo=ZoneInfo(TZ)).timestamp())}"]])
 
@@ -273,7 +273,7 @@ class MoveReview(MoveWorld):
         self.through("freeze", "state", "publish")
         # Resume starts a second before the next 03:00 and, a gh call at a time, installs the dispatcher after it: neither the dispatcher nor the recovery covers that slot unless the recovery reaches up to the install.
         self.world(slow=1)
-        self.job("resume", now=ts(18, 3) - 1)
+        self.job("resume", now=ts(18, 3) - 1, expect=3)
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]])
 
@@ -281,7 +281,7 @@ class MoveReview(MoveWorld):
         self.job("inventory")
         self.through("freeze", "state", "publish")
         later, slot = T0 + 86400, ts(18, 3)
-        self.job("resume", now=later)
+        self.job("resume", now=later, expect=3)
         # GitHub took the dispatch, but its run ended (cancelled, failed to start) before it claimed the slot: the slot has not run.
         check = self.job("verify", now=later, expect=1)
         self.assertTrue(any(p.startswith("nightly:") and str(slot) in p for p in check["problems"]), check["problems"])
@@ -455,7 +455,7 @@ class MoveReview(MoveWorld):
             agents.chmod(0o755)
         later = T0 + 86400
         for step in ("freeze", "state", "publish", "resume"):
-            self.job(step, "--only", "nightly", now=later)
+            self.job(step, "--only", "nightly", now=later, expect=3 if step == "resume" else 0)
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]], "the slot missed since the first freeze unloaded it")
 
@@ -494,3 +494,20 @@ class MoveReview(MoveWorld):
         w["repos"][REPO]["workflows"]["stuck.yml"] = "disabled_manually"
         self.world(w)
         self.assertEqual(self.job("verify")["problems"], [], "switched off, it waits for a decision without firing the old command")
+
+
+class MoveRepairReview(MoveWorld):
+    """What the GPT review of the move's repairs found, each reproduced at the job's command line: a resume that says done before its slot runs, a rollback that undoes or overwrites what it should leave alone, a one-off left on, a stale inventory, a recovery the error message cannot lead to, and another repository's dispatcher taken."""
+
+    def test_the_first_resume_that_dispatches_a_slot_is_not_done(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        later, slot = T0 + 86400, ts(18, 3)
+        # The missed 03:00 is dispatched; until a run claims it, "exit 0 means done" would stop the operator before it ran.
+        out = self.job("resume", now=later, expect=3)
+        self.assertEqual({r["name"]: r["status"] for r in out["results"]}["nightly"], "waiting")
+        self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active")
+        self.assertTrue(self.plist(NEW_PREFIX + "nightly"))
+        registry.claim_slot(str(self.runs_dir()), "nightly", slot, "44000000001-1", {"trigger": "recovery", "profile": "full"}, exact=True)
+        self.job("resume", now=later)
+        self.assertEqual(len([c for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]), 1, "claimed after the first dispatch, it is not dispatched again")

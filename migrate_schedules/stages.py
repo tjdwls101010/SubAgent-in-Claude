@@ -217,6 +217,10 @@ def resume(j: Journal, row, ctx):
                 dispatch_workflow(ctx["repo"], row["file"], ctx["branch"], {"source": "dispatcher", "slot": key})
                 j.update(name, recovered=(j.of(name).get("recovered") or []) + [key])
         j.update(name, resumed=True, resumed_state=want)
+        # A dispatch GitHub took is not yet a slot run: done only once a run claims it, as a resume run again decides.
+        open_ = unclaimed(row, ctx, j.of(name))
+        if open_:
+            raise NotYet(f"{name}: slot(s) {', '.join(open_)} dispatched; run this step again once a run has claimed them")
     else:
         set_workflow_enabled(ctx["repo"], row["file"], False)
         j.update(name, resumed=True, resumed_state=want)
