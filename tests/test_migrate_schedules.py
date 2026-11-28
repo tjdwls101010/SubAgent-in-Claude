@@ -404,3 +404,12 @@ class MoveReview(MoveWorld):
         registry.update_meta(run_dir, lambda m: m.update({"state": "completed"}))
         self.job("rollback", "--only", "nightly")
         self.assertTrue(self.plist(OLD_PREFIX + "nightly"))
+
+    def test_freeze_sees_a_queued_run_behind_a_hundred_newer_ones(self):
+        self.job("inventory")
+        w = self.world()
+        old = {"workflowName": "nightly.yml", "event": "schedule", "displayTitle": "nightly · schedule", "createdAt": "2026-11-01T03:00:00Z", "url": "https://github.com/x"}
+        w["runs"] = [{**old, "databaseId": 1, "status": "queued", "conclusion": None}] + [{**old, "databaseId": 2 + i, "status": "completed", "conclusion": "cancelled"} for i in range(100)]
+        self.world(w)
+        out = self.job("freeze", "--only", "nightly", expect=3)
+        self.assertEqual(out["results"][0]["status"], "waiting")
