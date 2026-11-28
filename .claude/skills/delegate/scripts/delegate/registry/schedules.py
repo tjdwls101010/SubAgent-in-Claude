@@ -128,7 +128,7 @@ def slot_unfilled(registry, name, slot):
 
 
 def _legacy_claim(state, name, slot, exact):
-    """For a schedule taken over from the `claude` skill: what its registry says of `slot` when this one holds no job for it — a job its command queued before the takeover may have filled it since, and a slot its record pruned may still have run (its runs' origins say). The claim found, its jobs and the old latest slot are merged into `state`; returns the claim, or None. The old registry is only read."""
+    """For a schedule taken over from the `claude` skill: what its registry says of `slot` when this one holds no job of its own for it — a job its command queued before the takeover may have filled it, or retried it, since; a run of it may have ended since; and a slot its record pruned may still have run (its runs' origins say). The claim found, its jobs as their runs now stand and the old latest slot are merged into `state`; returns the claim, or None. The old registry is only read."""
     legacy = state["legacy_registry"]
     if not Path(legacy).is_dir():  # removed or moved since the takeover: nothing to read, and taking its lock would make the directory again
         return None
@@ -136,19 +136,23 @@ def _legacy_claim(state, name, slot, exact):
         old = read_json(Path(legacy) / ".schedules" / name / "state.json") or {}
     if old.get("last_slot") is not None:
         state["last_slot"] = max(state["last_slot"] or old["last_slot"], old["last_slot"])
-    if ((state["slots"].get(str(slot))) or {}).get("job"):
+    mine = state["slots"].get(str(slot)) or {}
+    if mine.get("job") and not (state["jobs"].get(mine["job"]) or {}).get("legacy"):
         return None
     claim = (old.get("slots") or {}).get(str(slot))
     if exact and not (claim or {}).get("job"):
         claim = _rebuild(legacy, name)["slots"].get(str(slot)) or claim
     if not (claim or {}).get("job"):
+        claim = mine
+    if not claim.get("job"):
         return None
-    for job in (claim["job"], claim.get("retried")):
-        if job and job not in state["jobs"]:
+    retried = mine.get("retried") or claim.get("retried")
+    for job in (claim["job"], retried):
+        if job and (state["jobs"].get(job) or {"legacy": True}).get("legacy"):
             rec = (old.get("jobs") or {}).get(job) or {}
             ended = next((m.get("state") for _, m in reversed(_schedule_runs(legacy, name)) if m["origin"].get("job") == job), None)
-            state["jobs"][job] = {**rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
-    claim = {"job": claim["job"], "retried": claim.get("retried"), **({"exact": True} if exact else {})}
+            state["jobs"][job] = {**(state["jobs"].get(job) or {}), **rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
+    claim = {"job": claim["job"], "retried": retried, **({"exact": True} if exact or mine.get("exact") else {})}
     state["slots"][str(slot)] = claim
     return claim
 

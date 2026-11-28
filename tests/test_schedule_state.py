@@ -190,9 +190,9 @@ class TakenOver(unittest.TestCase):
         with registry.schedule_lock(self.reg, "nightly"):
             self.assertTrue(registry.take_over_legacy_state(self.reg, "nightly", self.old))
 
-    def old_run(self, job, slot, state="completed"):
+    def old_run(self, job, slot, state="completed", profile="write"):
         origin = {"kind": "schedule", "name": "nightly", "trigger": "dispatcher", "slot": slot, "job": job}
-        registry.publish_run(self.old, f"s-{job}", lambda existing: None, lambda rid, d: {"state": state, "settings": {"profile": "write"}, "origin": origin})
+        return registry.publish_run(self.old, f"s-{job}", lambda existing: None, lambda rid, d: {"state": state, "settings": {"profile": profile}, "origin": origin})[0]
 
     def test_a_slot_the_old_command_fills_after_the_takeover_is_skipped(self):
         # The old command filled 03:00; a job of it queued before the takeover runs after it and fills 04:00 in its own registry.
@@ -208,6 +208,24 @@ class TakenOver(unittest.TestCase):
         registry.claim_slot(self.old, "nightly", S4, "2-1", self.entry("read-only"))
         self.old_run("2-1", S4, state="failed")
         self.assertEqual([registry.claim_slot(self.reg, "nightly", S4, j, self.entry("read-only"))["decision"] for j in ("3-1", "4-1")], ["retry", "skip"])
+
+    def test_a_taken_over_failed_slot_the_old_command_retries_after_the_takeover_is_not_retried_again(self):
+        # 03:00 failed read-only before the takeover; a job the old command queued before it then takes that slot's one retry in the old registry.
+        registry.claim_slot(self.old, "nightly", S3, "1-1", self.entry("read-only"))
+        registry.update_job(self.old, "nightly", "1-1", {"run_id": self.old_run("1-1", S3, state="failed", profile="read-only")})
+        self.take_over()
+        self.assertEqual(registry.claim_slot(self.old, "nightly", S3, "2-1", self.entry("read-only"))["decision"], "retry")
+        self.old_run("2-1", S3, state="running", profile="read-only")
+        self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "3-1", self.entry("read-only"))["decision"], "skip")
+
+    def test_a_taken_over_slot_still_running_at_the_takeover_that_then_fails_is_retried_once(self):
+        # 03:00's read-only run was still running when the schedule was taken over, and failed after.
+        registry.claim_slot(self.old, "nightly", S3, "1-1", self.entry("read-only"))
+        run = self.old_run("1-1", S3, state="running", profile="read-only")
+        registry.update_job(self.old, "nightly", "1-1", {"run_id": run})
+        self.take_over()
+        registry.update_meta(str(Path(self.old) / run), lambda m: m.__setitem__("state", "failed"))
+        self.assertEqual([registry.claim_slot(self.reg, "nightly", S3, j, self.entry("read-only"))["decision"] for j in ("3-1", "4-1")], ["retry", "skip"])
 
     def test_a_recovery_of_a_slot_the_old_record_pruned_is_skipped(self):
         self.old_run("0-1", S3)
