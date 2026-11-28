@@ -105,6 +105,29 @@ class CodexLimit(Sandbox):
         out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
         self.wait_state(out["run_id"])
 
+    def test_an_allowance_the_server_cannot_say_refuses_nothing(self):
+        # `ordinaryUsageAllowed: null` is the server saying it cannot tell (codex 0.167.1's schema: "Null means unavailable; clients must not infer recovery from percentages or reset times"), so a full window alone is no verdict.
+        path = self.root / "rl.json"
+        exhausted_answer(path)
+        answer = json.loads(path.read_text())
+        answer["result"]["ordinaryUsageAllowed"] = None
+        path.write_text(json.dumps(answer))
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
+        self.wait_state(out["run_id"])
+
+    def test_use_refused_for_depleted_credits_names_no_window_to_wait_for(self):
+        # Ordinary use refused because the workspace's credits ran out, with neither window full: neither window's reset is when it comes back, so nothing up front says until when.
+        path = self.root / "rl.json"
+        exhausted_answer(path)
+        answer = json.loads(path.read_text())
+        rl = answer["result"]["rateLimits"]
+        rl["primary"]["usedPercent"] = 20
+        rl["rateLimitReachedType"] = "workspace_owner_credits_depleted"
+        answer["result"]["rateLimitsByLimitId"] = {"codex": rl}
+        path.write_text(json.dumps(answer))
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": str(path)})
+        self.wait_state(out["run_id"])
+
     def test_without_the_app_server_the_newest_rollout_is_read(self):
         event = self.fresh_rollout()
         rollouts = self.root / "codex-home" / "sessions" / "2026" / "11" / "28"
