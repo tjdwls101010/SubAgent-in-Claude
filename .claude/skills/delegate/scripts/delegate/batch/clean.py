@@ -174,7 +174,7 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
         stranded = submodule_commits_only_here(str(path), repo)
         if stranded:
             # A submodule's commits made in this checkout are stored only in it; they are kept whatever --force says, as detached commits are.
-            kept.append({**entry, "reason": f"submodule(s) {', '.join(stranded)} hold commits your checkout's copy does not have, which removing it would lose", "instead": f"fetch them into your checkout first: git -C <your submodule> fetch {path}/<submodule> HEAD"})
+            kept.append({**entry, "reason": f"submodule(s) {', '.join(stranded)} hold commits your checkout's copy does not have, which removing it would lose", "instead": f"fetch them into your checkout first: git -C <your submodule> fetch {path}/<submodule> HEAD 'refs/*:refs/delegate/{group}-{slot['index']}/*'"})
             return
         artifacts = (meta or {}).get("startup_artifacts") or {}
         left = leftovers(path, repo, artifacts)

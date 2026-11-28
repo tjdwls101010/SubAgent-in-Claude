@@ -431,3 +431,30 @@ class PostReview(Worktrees):
         self.assertTrue((old / "mine.txt").exists(), f"clean --force deleted a directory git does not record as the checkout: {out}")
         self.assertEqual([k["index"] for k in out["kept"]], [1], out)
         self.assertFalse(out["name_released"])
+
+    def test_submodule_commits_only_a_local_branch_holds_are_kept(self):
+        from support.harness import make_repo
+
+        lib = self.root / "lib"
+        make_repo(lib, {"lib.txt": "1\n"})
+        git(self.project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "lib")
+        git(self.project, "commit", "-q", "-m", "add lib")
+        self.batch("sb", "x")
+        wt = self.wt("sb-1")
+        git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+        git(wt / "lib", "switch", "-q", "-c", "feature")
+        (wt / "lib" / "lib.txt").write_text("2\n")
+        git(wt / "lib", "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "only on feature")
+        work = git(wt / "lib", "rev-parse", "HEAD")
+        # Back on the commit the checkout records: the checkout looks clean, and the work is on the submodule's local branch alone.
+        git(wt, "submodule", "update", "-q")
+        self.assertEqual(git(wt, "status", "--porcelain", "--ignore-submodules=none", "--", "lib"), "")
+        out = self.clean("sb")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertIn("submodule", out["kept"][0]["reason"])
+        self.assertEqual(git(wt / "lib", "rev-parse", "feature"), work)
+        import shlex, subprocess
+        advice = shlex.split(out["kept"][0]["instead"].split(": ", 1)[1].replace("<your submodule>", str(self.project / "lib")).replace("<submodule>", "lib"))
+        subprocess.run(advice, check=True, capture_output=True, env=self.env)
+        self.assertTrue(self.clean("sb")["name_released"], "following the advice should let clean finish")
+        self.assertEqual(git(self.project / "lib", "rev-parse", "refs/delegate/sb-1/heads/feature"), work)

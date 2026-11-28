@@ -135,7 +135,7 @@ def unlock_and_remove(repo, path, force):
 
 
 def submodule_commits_only_here(worktree, main):
-    """The initialised submodules of the checkout at `worktree` whose checked-out commit the main checkout's copy of that submodule does not have — commits made there live only in this checkout's own submodule store, so removing it loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
+    """The initialised submodules of the checkout at `worktree` holding a commit the main checkout's copy of that submodule does not have — its checked-out commit, or what any of its own refs (a local branch, a tag, a stash; not a remote-tracking ref, which its remote holds) points at — since commits made there live only in this checkout's own submodule store, so removing it loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
     code, out, _ = run_git(worktree, "submodule", "status", "--recursive")
     if code != 0:
         return []
@@ -148,8 +148,9 @@ def submodule_commits_only_here(worktree, main):
             continue
         sha, rel = parts[0], parts[1]
         there = Path(main) / rel
-        found, _, _ = run_git(str(there), "cat-file", "-e", f"{sha}^{{commit}}") if there.is_dir() else (1, "", "")
-        if found != 0:
+        code, refs, _ = run_git(str(Path(worktree) / rel), "for-each-ref", "--format=%(objectname) %(refname)")
+        tips = {sha} | {line.split(" ", 1)[0] for line in refs.splitlines() if line and not line.split(" ", 1)[-1].startswith("refs/remotes/")}
+        if code != 0 or not there.is_dir() or any(run_git(str(there), "cat-file", "-e", f"{tip}^{{commit}}")[0] != 0 for tip in sorted(tips)):
             only.append(rel)
     return only
 
