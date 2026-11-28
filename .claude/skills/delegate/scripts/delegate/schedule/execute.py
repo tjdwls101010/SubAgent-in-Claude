@@ -419,7 +419,7 @@ def _end_one_off(spec, ctx, registry, rec, state):
     repo = ctx.get("repository")
     name = spec["name"]
     notes, warnings = [], []
-    ended = {"disabled": False, "dispatcher": None}
+    ended = {"disabled": False, "dispatcher": None, "workflow": None}
     # The definition the job was started from, as its Run step recorded it: a Finish run again later may be given the flags of a schedule set since.
     mine = rec.get("definition") or spec.get("definition")
     with schedule_lock(registry, name):
@@ -427,7 +427,7 @@ def _end_one_off(spec, ctx, registry, rec, state):
         if current != mine:
             return ["This one-off was scheduled again or removed while it ran, so this run left the newer definition alone."], []
         # The file this job's step names: a step written before files took the name as given names claude-NAME.yml, and so is one that names none.
-        file = spec.get("workflow") or legacy_workflow_file(name)
+        file = ended["workflow"] = spec.get("workflow") or legacy_workflow_file(name)
         try:
             set_workflow_enabled(repo, file, False)
             ended["disabled"] = True

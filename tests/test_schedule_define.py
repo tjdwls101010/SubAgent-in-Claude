@@ -1142,6 +1142,19 @@ class OneOff(Scheduling):
         self.assertEqual((self.root / "job" / "1" / "summary").read_text(), summary, "the summary stays as the job wrote it")
         self.assertEqual(self.cli_json("doctor", "--engine", "claude", timeout=120)["schedule"]["unfinished_one_offs"], [])
 
+    def test_doctor_reads_the_one_offs_own_workflow_file(self):
+        # The disable failed and someone then disabled nightly.yml by hand, as the summary says; claude-nightly.yml is another workflow of the repository.
+        spec = self.make()
+        self.world(fail_disable=True)
+        self.job(spec, "1", "x")
+        self.world(fail_disable=False)
+        self.plant("claude-nightly.yml", "name: other\non: push\n")
+        w = self.world()
+        w["repos"][REPO]["workflows"]["nightly.yml"] = "disabled_manually"
+        self.world(w)
+        self.assertIsNone(self.plist())
+        self.assertEqual(self.cli_json("doctor", "--engine", "claude", timeout=120)["schedule"]["unfinished_one_offs"], [])
+
     def test_finish_run_again_for_an_old_job_leaves_the_one_off_scheduled_since(self):
         # The one-off ran and ended; it was scheduled again for the next day; then the old job's Finish is run again with the flags the workflow holds now.
         spec = self.make()
