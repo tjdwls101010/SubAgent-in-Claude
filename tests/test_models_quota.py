@@ -91,10 +91,12 @@ class CodexLimit(Sandbox):
         self.wait_state(out["run_id"])
 
     def test_an_app_server_that_never_answers_delays_a_start_but_refuses_nothing(self):
+        heard = self.root / "app-server.log"
         began = time.time()
-        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!silent"}, timeout=60)
+        out = self.codex("start", "x", env={"FAKE_CODEX_RATE_LIMITS": "!silent", "FAKE_CODEX_APP_SERVER_LOG": str(heard)}, timeout=60)
         self.wait_state(out["run_id"])
         self.assertLess(time.time() - began, 40)
+        self.assertIn("account/rateLimits/read", heard.read_text().split() if heard.exists() else [], "the limits were asked for, and the start went on without the answer")
 
     def test_ordinary_use_the_server_allows_is_not_exhausted(self):
         path = self.root / "rl.json"
