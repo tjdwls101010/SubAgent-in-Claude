@@ -378,3 +378,13 @@ class MoveReview(MoveWorld):
             if self.committed(name).startswith("# Written by the delegate skill's"):
                 self.assertTrue((journal[name].get("published") or {}).get("old_text"), f"{name} was rewritten on GitHub, and the journal must keep how to undo it")
         self.assertTrue(all(p.returncode == 0 for p in procs), [p.returncode for p in procs])
+
+    def test_the_inventory_reads_a_schedules_text_and_sha_from_one_version(self):
+        # Between the listing and the read of its SHA, someone scheduled the finished one-off `done` again (still with the claude skill): the listing has the finished one, the file is the new one.
+        finished = self.legacy_text("done", at="2026-11-16T06:00")
+        again = self.legacy_text("done", at="2026-12-05T06:00", definition="e1e1e1e1")
+        self.plant("done.yml", again, state="disabled_manually", sha="again", graphql_text=finished)
+        inv = {r["name"]: r for r in self.job("inventory")["schedules"]}
+        self.assertNotEqual(inv["done"]["class"], "finished", inv["done"])
+        self.through("freeze", "state", "publish")
+        self.assertIn("done.yml", self.files(), "the schedule made again is not deleted")

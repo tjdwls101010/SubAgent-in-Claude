@@ -3,6 +3,7 @@
 
 world.json: {"auth": "ok" | "none" | "noscope", "repos": {"owner/name": {"private", "default_branch", "files": {path: {"text", "sha"}}, "workflows": {file: state}, "runners": [{"name", "status", "labels"}]}}, "race": n, "race_cron": expr, "protected": bool}
   A file may carry "graphql": "none" or "truncated": the GraphQL listing then gives its entry no text (the schema's answer for a binary blob; not captured) or a cut one marked `isTruncated`, while the Contents API still returns it whole.
+  A file may carry "graphql_text": the text the GraphQL listing gives instead — the file as it was when the listing read it, before a commit the Contents API already shows.
   Repositories are found whatever the case of the owner and name, and answer with the key's spelling as `full_name`, as GitHub does.
   race: the next n Contents PUTs first lose to another `schedule` call, which commits the file as it was (or, for a first create, what this call sends) under another definition id — and with `race_cron`, another cron — and get the 409 a real loser got (stage 0 f).
   protected: a Contents PUT or DELETE gets the 409 a protected branch answered (captured).
@@ -198,9 +199,9 @@ if args[1:2] == ["graphql"]:
         if deeper:
             entries[name] = {"name": name, "type": "tree", "object": {}}
         else:
-            how = f.get("graphql")
-            text = None if how == "none" else f["text"][: len(f["text"]) // 2] if how == "truncated" else f["text"]
-            entries[name] = {"name": name, "type": "blob", "object": {"byteSize": len(f["text"].encode()), "isTruncated": how == "truncated", "text": text}}
+            how, listed = f.get("graphql"), f.get("graphql_text", f["text"])
+            text = None if how == "none" else listed[: len(listed) // 2] if how == "truncated" else listed
+            entries[name] = {"name": name, "type": "blob", "object": {"byteSize": len(listed.encode()), "isTruncated": how == "truncated", "text": text}}
     if not entries:
         answer("graphql-workflows-nodir")
     print(json.dumps({"data": {"repository": {"object": {"entries": [entries[k] for k in sorted(entries)]}}}}))
