@@ -7,7 +7,7 @@
       "name": "delegate",
       "source": "./",
       "description": "Background workers on two engines — GPT through the local Codex CLI, Claude through headless Claude Code — managed like subagents.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "license": "Apache-2.0"
     }
   ]
