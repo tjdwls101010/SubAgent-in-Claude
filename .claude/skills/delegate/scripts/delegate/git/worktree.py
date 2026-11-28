@@ -403,9 +403,8 @@ def add_detached(repo, path, base):
     return (True, None) if code == 0 else (False, (err or out).strip()[:400])
 
 
-def remove_unfinished(repo, path):
-    """Remove a checkout `git worktree add` never finished — no .git file, or still under the `initializing` lock that command holds for the whole add — which `git worktree remove` refuses to validate. Judged on git's own record of `path`; a finished checkout, or one git does not record, is never deleted by hand. (ok, error)."""
-    path = Path(path)
+def left_unfinished(repo, path):
+    """Whether `path` is a checkout `git worktree add` never finished: git records that exact path still under the `initializing` lock that command holds for the whole add. No .git alone does not say so — a checkout deleted by hand leaves git's record, and a person may make a directory there. (unfinished, why not)."""
     code, out, _ = run_git(repo, "worktree", "list", "--porcelain")
     if code != 0:
         return False, "git could not list the worktrees"
@@ -415,9 +414,18 @@ def remove_unfinished(repo, path):
         # A directory at a path git no longer records (the checkout moved away, then someone made one there) is not git's to remove.
         return False, "git does not record a checkout at this path"
     # 성진: a git that translates its messages writes the lock reason in its own language; the checkout is then kept, the safe side. Match the translations too if that is ever seen.
-    unfinished = not (path / ".git").exists() or "locked initializing" in record
+    if "locked initializing" not in record:
+        return False, "git does not record it as a checkout it is still making"
+    return True, None
+
+
+def remove_unfinished(repo, path):
+    """Remove a checkout `git worktree add` never finished (`left_unfinished`), which `git worktree remove` refuses to validate; anything else is never deleted by hand. (ok, error)."""
+    path = Path(path)
+    unfinished, why = left_unfinished(repo, path)
     if not unfinished:
-        return False, "not a checkout git left unfinished"
+        return False, why
+    here = os.path.realpath(path)
     run_git(repo, "worktree", "unlock", str(path))
     shutil.rmtree(path, ignore_errors=True)
     run_git(repo, "worktree", "prune")

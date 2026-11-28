@@ -432,6 +432,20 @@ class PostReview(Worktrees):
         self.assertEqual([k["index"] for k in out["kept"]], [1], out)
         self.assertFalse(out["name_released"])
 
+    def test_a_directory_where_git_records_a_deleted_checkout_is_not_deleted_by_hand(self):
+        # GPT review of the clean fixes, finding 1: git's stale record of the path and no .git in it do not make it a checkout git left unfinished.
+        self.batch("st", "x")
+        old = self.wt("st-1")
+        shutil.rmtree(old)
+        old.mkdir()
+        (old / "mine.txt").write_text("a person's file\n")
+        out = self.clean("st")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertNotIn("--force", out["kept"][0].get("instead", ""), out)
+        forced = self.clean("st", "--force")
+        self.assertTrue((old / "mine.txt").exists(), f"clean --force deleted a directory git never made: {forced}")
+        self.assertFalse(forced["name_released"])
+
     def test_submodule_commits_only_a_local_branch_holds_are_kept(self):
         from support.harness import make_repo
 

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 from delegate.errors import NotFound, Refusal
-from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, submodule_commits_only_here, unlock_and_remove
+from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, left_unfinished, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, submodule_commits_only_here, unlock_and_remove
 from delegate.registry import find_run, group_view, is_live, iter_runs, publish_lock, reap, registry_args, release_group, unreadable_runs
 from delegate.util import invocation, pid_alive, process_command
 
@@ -147,6 +147,10 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
             return
     if path.exists() and not (path / ".git").exists():
         # A checkout `git worktree add` never finished (killed partway) has no .git of its own — git would answer for the repository around it instead — and git refuses to remove it; only such a one is deleted by hand, and only with --force.
+        unfinished, why = left_unfinished(repo, path)
+        if not unfinished:
+            kept.append({**entry, "reason": f"it has no .git and is not a checkout git left unfinished, so it is not deleted: {why}"})
+            return
         if not force:
             kept.append({**entry, "reason": "a checkout git never finished making (no .git in it); clean --force removes it", "instead": invocation("clean", "--group", group, "--force", *registry_args(runs_dir))})
             return
