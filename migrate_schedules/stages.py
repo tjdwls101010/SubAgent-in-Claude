@@ -62,8 +62,11 @@ def freeze(j: Journal, row, ctx):
         s = {}
     if not s.get("plist_moved"):
         label = legacy_dispatcher_label(ctx["repo"], name)
+        if not s.get("frozen_at"):
+            # Journaled before the dispatcher is touched: a step that stops once it is unloaded still has when the freeze began, which the slots to recover start from, and a rollback finds the schedule and its backup.
+            j.update(name, plist_backup=str(j.backup / f"{label}.plist"), frozen_at=ctx["now"])
         _move_plist_out(label, j.backup / f"{label}.plist")
-        j.update(name, plist_moved=True, plist_backup=str(j.backup / f"{label}.plist"), frozen_at=ctx["now"])
+        j.update(name, plist_moved=True)
     if not s.get("disabled"):
         set_workflow_enabled(ctx["repo"], row["file"], False)
         j.update(name, disabled=True)

@@ -433,3 +433,20 @@ class MoveReview(MoveWorld):
             self.job(step, now=now)
         self.assertNotIn("later.yml", self.files())
         self.assertTrue(self.committed("nightly").startswith("# Written by the delegate skill's"))
+
+    def test_a_freeze_that_stopped_after_unloading_keeps_its_time(self):
+        label = OLD_PREFIX + "nightly"
+        agents = self.home / "Library" / "LaunchAgents"
+        (self.lc_state / "loaded.json").write_text(json.dumps({label: str(agents / f"{label}.plist")}))
+        self.job("inventory")
+        # launchd lets the old dispatcher go, then its plist cannot be deleted: the step stops with the dispatcher already unloaded.
+        agents.chmod(0o555)
+        try:
+            self.job("freeze", "--only", "nightly", expect=3)
+        finally:
+            agents.chmod(0o755)
+        later = T0 + 86400
+        for step in ("freeze", "state", "publish", "resume"):
+            self.job(step, "--only", "nightly", now=later)
+        dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
+        self.assertEqual(dispatched, [[f"slot={ts(18, 3)}"]], "the slot missed since the first freeze unloaded it")
