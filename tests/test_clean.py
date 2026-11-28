@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import unittest
+from pathlib import Path
 
 from support.harness import CLAUDE_RUN, FAST_TIMINGS, Sandbox, engine, git
 
@@ -393,3 +394,185 @@ class Landed(Worktrees):
         reply, _ = self.clean_landed("pr", {"landed": True, "label": "#204", "default": "main"})
         (removed,) = reply["removed"]
         self.assertNotIn("dormant", removed["branches_deleted"])
+
+
+class PostReview(Worktrees):
+    """GPT review after PR 3: a clean that looked at an earlier use of a name (1), a path git no longer records as the checkout (2), submodule commits only a local branch holds (3)."""
+
+    def test_a_clean_of_an_earlier_use_of_the_name_leaves_the_next_one_alone(self):
+        import subprocess, sys, time
+        from support.harness import ENTRY, engine
+        reg = engine("delegate.registry")
+        self.batch("g", "first [[fake:write:old.txt]]")
+        lock = self.runs_dir() / ".locks" / "publish.lock"
+        with reg.publish_lock(str(self.runs_dir())):
+            # Clean A has read generation 1 and waits for the publish lock. The lock file is unlinked under it, so clean B and the next batch lock a new one and run while A still waits: A is held just before its lock while the name is cleaned and used again.
+            a = subprocess.Popen([sys.executable, str(ENTRY), "clean", "--group", "g", "--force"], cwd=self.project, env=self.env, stdout=subprocess.PIPE, text=True)
+            self.addCleanup(a.kill)
+            time.sleep(1.5)
+            self.assertIsNone(a.poll())
+            lock.unlink()
+            self.assertTrue(self.clean("g", "--force")["name_released"])
+            self.batch("g", "second [[fake:write:new.txt]]")
+            self.assertTrue((self.wt("g-1") / "new.txt").exists())
+        out, _ = a.communicate(timeout=60)
+        reply = json.loads(out)
+        self.assertTrue((self.wt("g-1") / "new.txt").exists(), f"a clean of generation 1 removed generation 2's checkout: {reply}")
+        self.assertFalse(reply["name_released"], reply)
+        self.assertTrue(self.cli_json("status", "--group", "g")["members"][0]["run_id"])
+
+    def test_a_directory_git_does_not_record_is_not_deleted_by_hand(self):
+        self.batch("mv", "x")
+        old, moved = self.wt("mv-1"), self.root / "moved"
+        git(self.project, "worktree", "unlock", str(old), check=False)
+        git(self.project, "worktree", "move", str(old), str(moved))
+        old.mkdir()
+        (old / "mine.txt").write_text("a person's file\n")
+        out = self.clean("mv", "--force")
+        self.assertTrue((old / "mine.txt").exists(), f"clean --force deleted a directory git does not record as the checkout: {out}")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertFalse(out["name_released"])
+
+    def test_a_directory_where_git_records_a_deleted_checkout_is_not_deleted_by_hand(self):
+        # GPT review of the clean fixes, finding 1: git's stale record of the path and no .git in it do not make it a checkout git left unfinished.
+        self.batch("st", "x")
+        old = self.wt("st-1")
+        shutil.rmtree(old)
+        old.mkdir()
+        (old / "mine.txt").write_text("a person's file\n")
+        out = self.clean("st")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertNotIn("--force", out["kept"][0].get("instead", ""), out)
+        forced = self.clean("st", "--force")
+        self.assertTrue((old / "mine.txt").exists(), f"clean --force deleted a directory git never made: {forced}")
+        self.assertFalse(forced["name_released"])
+
+    def test_submodule_commits_only_a_local_branch_holds_are_kept(self):
+        from support.harness import make_repo
+
+        lib = self.root / "lib"
+        make_repo(lib, {"lib.txt": "1\n"})
+        git(self.project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "lib")
+        git(self.project, "commit", "-q", "-m", "add lib")
+        self.batch("sb", "x")
+        wt = self.wt("sb-1")
+        git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+        git(wt / "lib", "switch", "-q", "-c", "feature")
+        (wt / "lib" / "lib.txt").write_text("2\n")
+        git(wt / "lib", "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "only on feature")
+        work = git(wt / "lib", "rev-parse", "HEAD")
+        # Back on the commit the checkout records: the checkout looks clean, and the work is on the submodule's local branch alone.
+        git(wt, "submodule", "update", "-q")
+        self.assertEqual(git(wt, "status", "--porcelain", "--ignore-submodules=none", "--", "lib"), "")
+        out = self.clean("sb")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertIn("submodule", out["kept"][0]["reason"])
+        self.assertEqual(git(wt / "lib", "rev-parse", "feature"), work)
+        self.follow(out["kept"][0]["instead"])
+        self.assertTrue(self.clean("sb")["name_released"], "following the advice should let clean finish")
+        self.assertTrue(self.held_by_a_ref(self.store(self.project, "lib"), work))
+
+    def submodules(self, name, *paths):
+        """A project with a submodule at each of `paths` and a group `name` whose one checkout has them initialised."""
+        from support.harness import make_repo
+
+        lib = self.root / "lib"
+        make_repo(lib, {"lib.txt": "1\n"})
+        for rel in paths:
+            git(self.project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), rel)
+        git(self.project, "commit", "-q", "-m", "add submodules")
+        self.batch(name, "x")
+        wt = self.wt(f"{name}-1")
+        git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+        return wt
+
+    def commit_on_feature(self, sub):
+        """A commit on a new local branch of the submodule checkout `sub`, then back on the commit the checkout records."""
+        git(sub, "switch", "-q", "-c", "feature")
+        (sub / "lib.txt").write_text("2\n")
+        git(sub, "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "only on feature")
+        work = git(sub, "rev-parse", "HEAD")
+        git(sub, "switch", "-q", "--detach", "HEAD~1")
+        return work
+
+    def store(self, wt, name):
+        """The git directory the checkout `wt` keeps submodule `name` in, which goes with the checkout."""
+        return git(wt, "rev-parse", "--path-format=absolute", "--git-path", f"modules/{name}")
+
+    def test_a_submodule_whose_path_has_a_space_is_looked_at(self):
+        # GPT review of the clean fixes, finding 2.
+        wt = self.submodules("sp", "lib", "lib with space")
+        work = self.commit_on_feature(wt / "lib with space")
+        out = self.clean("sp")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertIn("lib with space", out["kept"][0]["reason"])
+        self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib with space"), "rev-parse", "feature"), work)
+
+    def test_the_store_of_a_submodule_deinit_left_is_looked_at(self):
+        # GPT review of the clean fixes, finding 2: deinit empties the submodule's directory but leaves its store, which goes with the checkout.
+        wt = self.submodules("dn", "lib")
+        work = self.commit_on_feature(wt / "lib")
+        git(wt, "submodule", "deinit", "-q", "-f", "lib")
+        out = self.clean("dn")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertIn("lib", out["kept"][0]["reason"])
+        self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib"), "rev-parse", "feature"), work)
+
+    def test_a_commit_only_a_remote_tracking_ref_holds_is_kept(self):
+        # GPT review of the clean fixes, finding 3: the remote dropped the branch after the checkout's submodule fetched it.
+        wt = self.submodules("rt", "lib")
+        lib = self.root / "lib"
+        git(lib, "switch", "-q", "-c", "topic")
+        (lib / "lib.txt").write_text("topic\n")
+        git(lib, "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "topic")
+        work = git(lib, "rev-parse", "HEAD")
+        git(wt / "lib", "fetch", "-q", "origin")
+        git(lib, "switch", "-q", "-")
+        git(lib, "branch", "-q", "-D", "topic")
+        out = self.clean("rt")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertEqual(git(self.project, "--git-dir", self.store(wt, "lib"), "rev-parse", "origin/topic"), work)
+
+    def test_a_ref_git_skips_keeps_the_checkout(self):
+        # GPT review of the clean fixes, finding 3: git warns "ignoring broken ref" and exits 0, so what that ref holds is not known.
+        wt = self.submodules("br", "lib")
+        (Path(self.store(wt, "lib")) / "refs" / "heads" / "broken").write_text("not a commit\n")
+        out = self.clean("br")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertTrue(wt.exists())
+
+    def follow(self, instead):
+        """Run the commands a kept member's `instead` gives after its colon, as a person would paste them."""
+        import subprocess
+        proc = subprocess.run(["sh", "-c", instead.split(": ", 1)[1]], capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def held_by_a_ref(self, store, commit):
+        return git(self.project, "--git-dir", store, "for-each-ref", "--contains", commit, "--format=%(refname)").splitlines()
+
+    def test_following_the_advice_keeps_the_commits_under_a_ref_every_time(self):
+        # GPT review of the clean fixes, finding 4: a commit only FETCH_HEAD names is not kept, and a second use of the name must not collide with the first's refs.
+        wt = self.submodules("rc", "lib")
+        mine = self.store(self.project, "lib")
+        git(wt / "lib", "switch", "-q", "--detach")
+        (wt / "lib" / "lib.txt").write_text("detached\n")
+        git(wt / "lib", "-c", "user.email=w@example.com", "-c", "user.name=w", "commit", "-q", "-am", "detached work")
+        work = git(wt / "lib", "rev-parse", "HEAD")
+        git(self.project, "--git-dir", mine, "fetch", "-q", str(wt / "lib"), "HEAD")
+        out = self.clean("rc", "--force")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], f"a commit only FETCH_HEAD names counted as kept: {out}")
+        self.follow(out["kept"][0]["instead"])
+        self.assertTrue(self.held_by_a_ref(mine, work))
+        self.assertTrue(self.clean("rc", "--force")["name_released"])
+        # Two later uses of the name, each with its own feature branch: the second keeping must not be refused for the first's refs.
+        firsts = {}
+        for n in (1, 2):
+            self.batch("rc", "x")
+            git(wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+            firsts[n] = self.commit_on_feature(wt / "lib")
+            out = self.clean("rc")
+            self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+            self.follow(out["kept"][0]["instead"])
+            self.assertTrue(self.clean("rc")["name_released"])
+            self.assertTrue(self.held_by_a_ref(mine, firsts[n]), n)
+        self.assertNotEqual(firsts[1], firsts[2])

@@ -107,7 +107,8 @@ def start_member(runs_dir, group, generation, size, plan, defaults, caller_cwd, 
             reply = resume(ref=task["resume"], engine=plan.get("engine"), prompt=task["prompt"], cwd=caller_cwd, flags={**plan["flags"], "cwd": str(Path(task["cwd"]).expanduser().resolve()) if task.get("cwd") else None}, label=plan["label"], timeout=defaults.get("timeout"), runs_dir=runs_dir, group=group, group_info=group_info, group_index=plan["index"], on_published=published)
     except Refusal as e:
         slot["error"] = e.message
-        return slot, {"index": plan["index"], "label": plan["label"], "engine": plan.get("engine"), "run_id": None, "error": e.message, **{k: v for k, v in e.fields.items() if k in ("instead", "run_id")}}
+        # A refusal's `run_id` is an existing run it names (a live one on the same session), never one this member started.
+        return slot, {"index": plan["index"], "label": plan["label"], "engine": plan.get("engine"), "run_id": None, "error": e.message, **({"instead": e.fields["instead"]} if "instead" in e.fields else {}), **({"existing_run_id": e.fields["run_id"]} if e.fields.get("run_id") else {})}
     except Exception as e:  # One member's unexpected failure must not take the slots of the others with it.
         slot["error"] = f"{type(e).__name__}: {e}"
         return slot, {"index": plan["index"], "label": plan["label"], "engine": plan.get("engine"), "run_id": None, "error": slot["error"]}

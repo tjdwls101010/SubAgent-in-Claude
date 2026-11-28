@@ -134,24 +134,58 @@ def unlock_and_remove(repo, path, force):
     return True, None
 
 
+def _module_stores(repo):
+    """{name: git directory} of every submodule store the repository at `repo` keeps under its own modules/ (a linked checkout's own, which goes with it), nested ones as `<name>/modules/<name>`; a store outlives `submodule deinit`. None when they cannot all be listed."""
+    code, out, _ = run_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "modules")
+    if code != 0 or not out.strip():
+        return None
+    stores = {}
+
+    def walk(d, prefix):
+        for child in sorted(d.iterdir()) if d.is_dir() else []:
+            if not child.is_dir() or child.is_symlink():
+                continue
+            if (child / "HEAD").is_file() and (child / "objects").is_dir():
+                stores[prefix + child.name] = child
+                walk(child / "modules", f"{prefix}{child.name}/modules/")
+            else:
+                # A name with a slash is a directory per part.
+                walk(child, f"{prefix}{child.name}/")
+
+    try:
+        walk(Path(out.strip()), "")
+    except OSError:
+        return None
+    return stores
+
+
 def submodule_commits_only_here(worktree, main):
-    """The initialised submodules of the checkout at `worktree` whose checked-out commit the main checkout's copy of that submodule does not have — commits made there live only in this checkout's own submodule store, so removing it loses them. A main checkout without that submodule, or git failing to tell, counts as not having it."""
-    code, out, _ = run_git(worktree, "submodule", "status", "--recursive")
-    if code != 0:
-        return []
+    """The submodules whose store goes with the checkout at `worktree` — each one under its own git directory's modules/, initialised or left by `submodule deinit`, and one cloned into the checkout with a .git directory of its own — holding a commit the main checkout's store of that submodule does not hold under a ref of its own: its checked-out commit, or what any of its refs points at (a local branch, a tag, a stash, and a remote-tracking ref too, whose branch the remote may have dropped) — since commits made there live only in this store, so removing the checkout loses them. A main checkout without that submodule, or git failing to tell or skipping a ref it cannot read, counts as not having it. Each as `{submodule, store, main_store}` (`main_store` None when the main checkout has none); None when the stores cannot all be listed."""
+    theirs, ours = _module_stores(main) or {}, _module_stores(worktree)
+    code, out, _ = run_git(worktree, "ls-files", "-s", "-z")
+    if ours is None or code != 0:
+        return None
+    pairs = [(name, store, theirs.get(name)) for name, store in ours.items()]
+    for item in out.split("\0"):
+        meta, _, rel = item.partition("\t")
+        if meta.startswith("160000 ") and (Path(worktree) / rel / ".git").is_dir():
+            there = Path(main) / rel / ".git"
+            pairs.append((nfc(rel), Path(worktree) / rel / ".git", there if there.exists() else None))
     only = []
-    for line in out.splitlines():
-        if not line or line[0] == "-":
-            continue
-        parts = line[1:].split()
-        if len(parts) < 2:
-            continue
-        sha, rel = parts[0], parts[1]
-        there = Path(main) / rel
-        found, _, _ = run_git(str(there), "cat-file", "-e", f"{sha}^{{commit}}") if there.is_dir() else (1, "", "")
-        if found != 0:
-            only.append(rel)
+    for name, store, there in pairs:
+        code, refs, warned = run_git(worktree, f"--git-dir={store}", "for-each-ref", "--format=%(objectname)")
+        head_code, head, _ = run_git(worktree, f"--git-dir={store}", "rev-parse", "--verify", "-q", "HEAD")
+        tips = {head.strip()} | {line for line in refs.splitlines() if line}
+        # git skips a ref it cannot read with only a warning ("ignoring broken ref"); what that ref holds is then unknown.
+        if code != 0 or warned.strip() or head_code != 0 or there is None or not _held(there, tips):
+            only.append({"submodule": name, "store": str(store), "main_store": str(there) if there else None})
     return only
+
+
+def _held(store, commits):
+    """Whether every one of `commits` is in the git directory `store` and reachable from its HEAD or one of its refs: an object a fetch left without a ref (only FETCH_HEAD names it, or the ref update was refused) goes with the next gc."""
+    code, out, _ = run_git(store, f"--git-dir={store}", "rev-list", "-n1", *sorted(commits), "--not", "--all")
+    return code == 0 and not out.strip()
 
 
 def commits_beyond(repo, branch, base):
@@ -402,22 +436,29 @@ def add_detached(repo, path, base):
     return (True, None) if code == 0 else (False, (err or out).strip()[:400])
 
 
-def remove_unfinished(repo, path):
-    """Remove a checkout `git worktree add` never finished — no .git file, or still under the `initializing` lock that command holds for the whole add — which `git worktree remove` refuses to validate. Judged on git's own record of `path`; a finished checkout, or one git does not record, is never deleted by hand. (ok, error)."""
-    path = Path(path)
+def left_unfinished(repo, path):
+    """Whether `path` is a checkout `git worktree add` never finished: git records that exact path still under the `initializing` lock that command holds for the whole add. No .git alone does not say so — a checkout deleted by hand leaves git's record, and a person may make a directory there. (unfinished, why not)."""
     code, out, _ = run_git(repo, "worktree", "list", "--porcelain")
     if code != 0:
         return False, "git could not list the worktrees"
     here = os.path.realpath(path)
-    unfinished = not (path / ".git").exists()
+    record = next((r.splitlines() for r in out.split("\n\n") if r.startswith("worktree ") and os.path.realpath(r.splitlines()[0][len("worktree "):]) == here), None)
+    if record is None:
+        # A directory at a path git no longer records (the checkout moved away, then someone made one there) is not git's to remove.
+        return False, "git does not record a checkout at this path"
+    # 성진: a git that translates its messages writes the lock reason in its own language; the checkout is then kept, the safe side. Match the translations too if that is ever seen.
+    if "locked initializing" not in record:
+        return False, "git does not record it as a checkout it is still making"
+    return True, None
+
+
+def remove_unfinished(repo, path):
+    """Remove a checkout `git worktree add` never finished (`left_unfinished`), which `git worktree remove` refuses to validate; anything else is never deleted by hand. (ok, error)."""
+    path = Path(path)
+    unfinished, why = left_unfinished(repo, path)
     if not unfinished:
-        for record in out.split("\n\n"):
-            lines = record.splitlines()
-            if lines and lines[0].startswith("worktree ") and os.path.realpath(lines[0][len("worktree "):]) == here:
-                # 성진: a git that translates its messages writes the lock reason in its own language; the checkout is then kept, the safe side. Match the translations too if that is ever seen.
-                unfinished = "locked initializing" in lines
-    if not unfinished:
-        return False, "not a checkout git left unfinished"
+        return False, why
+    here = os.path.realpath(path)
     run_git(repo, "worktree", "unlock", str(path))
     shutil.rmtree(path, ignore_errors=True)
     run_git(repo, "worktree", "prune")

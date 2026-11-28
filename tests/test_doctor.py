@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from support.harness import CLAUDE_RUN, Sandbox
 
@@ -88,6 +89,19 @@ class Doctor(Sandbox):
         self.wait_state(again["runs"][0]["run_id"])
         owners = {w["path"]: w["group"] for w in self.doctor()["registry"]["worktrees"]}
         self.assertEqual(owners.get(first["worktree"]), "a")
+
+    def test_checkouts_of_a_registry_given_with_runs_dir(self):
+        # GPT review after PR 3, finding 8: a codex checkout lives in its run's directory, which is not .delegate-runs here.
+        from support.harness import CODEX_RUN
+
+        custom = self.root / "custom-runs"
+        reply = self.cli_json("batch", *CODEX_RUN, "--group", "cx", "--worktree", "--task", "x", "--runs-dir", str(custom), timeout=120)
+        self.cli("result", "--group", "cx", "--wait", "--runs-dir", str(custom), timeout=120)
+        path = reply["runs"][0]["worktree"]
+        self.assertTrue(path.startswith(str(custom)) and os.path.isdir(path), path)
+        d = self.cli_json("doctor", "--runs-dir", str(custom), timeout=120)
+        self.assertEqual(d["registry"]["groups"], ["cx"])
+        self.assertEqual({w["path"]: w["group"] for w in d["registry"]["worktrees"]}, {path: "cx"})
 
     def test_registry_live_runs(self):
         live = self.start("x [[fake:sleep:30]]")

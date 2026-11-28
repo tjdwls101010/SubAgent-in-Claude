@@ -2,7 +2,7 @@
 
 A checkout is removed only when removing it loses nothing: no change to a tracked file, every untracked or ignored entry either a `.worktreeinclude` copy (a claude member's) or a startup artifact unchanged since the member's first init recorded it, and no commit on a detached HEAD that no branch holds. `git worktree remove` would silently delete ignored files, so this check comes first. --force discards what the check would keep, but never live work, an orphan still writing, a checkout any run of any engine works in, a member whose record cannot be read, or commits no branch holds.
 
-Each member's check and removal happen under the registry's publish lock, the same lock every run is published under, so no run can start working in a checkout between `clean`'s look and its removal.
+Each member's check and removal happen under the registry's publish lock, the same lock every run is published under, so no run can start working in a checkout between `clean`'s look and its removal; and only while the name is still the use of it `clean` read, since a claude member's checkout path is the same on every use of the name.
 
 A caller that can ask GitHub (a schedule's Finish) passes `landed`: a member whose commits are already on GitHub then goes even with something left in it, which is first kept in git under refs/delegate/leftovers/<group>-<index>, and its branches go with it when they point at that commit; a member whose pull request is still open stays.
 """
@@ -10,10 +10,12 @@ A caller that can ask GitHub (a schedule's Finish) passes `landed`: a member who
 from __future__ import annotations
 
 import os
+import shlex
+import time
 from pathlib import Path
 
 from delegate.errors import NotFound, Refusal
-from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, submodule_commits_only_here, unlock_and_remove
+from delegate.git import branch_tip, commits_beyond, current_branch, delete_branch, detached_commits, head_commit, last_changed, left_unfinished, leftovers, preserve_leftovers, prune_worktree, remove_unfinished, submodule_commits_only_here, unlock_and_remove
 from delegate.registry import find_run, group_view, is_live, iter_runs, publish_lock, reap, registry_args, release_group, unreadable_runs
 from delegate.util import invocation, pid_alive, process_command
 
@@ -74,7 +76,7 @@ def clean(*, runs_dir, name, force=False, landed=None, untouched_since=None):
             live.append(meta["run_id"])
     if live:
         raise Refusal(f"group {name} has live runs; live work is never removed", live=live, instead=invocation("stop", "--group", name, *registry_args(runs_dir)), why="stop them first, then clean")
-    removed, kept = [], []
+    removed, kept, superseded = [], [], False
     for slot in slots:
         meta = metas.get(slot["index"])
         wt = checkout_of(slot, meta)
@@ -85,16 +87,27 @@ def clean(*, runs_dir, name, force=False, landed=None, untouched_since=None):
         if not wt:
             continue
         with publish_lock(runs_dir):
+            if not still_this_use(runs_dir, name, manifest.get("generation")):
+                superseded = True
+                break
             clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=name, landed=landed, untouched_since=untouched_since)
-    released = not kept and not unreadable
-    if released:
-        release_group(runs_dir, name, manifest.get("generation"))
+    released = not superseded and not kept and not unreadable and release_group(runs_dir, name, manifest.get("generation"))
     reply = {"group": name, "removed": removed, "kept": kept, "name_released": released}
     if force:
         reply["forced"] = True
-    if not released:
+    if superseded or (not released and not kept and not unreadable):
+        reply["note"] = "another clean released the name meanwhile (and a batch may have used it again); nothing more of the use this clean read was touched"
+    elif not released:
         reply["note"] = "the name stays reserved until every checkout is removed"
     return reply
+
+
+def still_this_use(runs_dir, name, generation):
+    """Whether `name` is still reserved by the use of it `clean` read: another clean may have released it since, and a batch taken it again."""
+    try:
+        return group_view(runs_dir, name).get("generation") == generation
+    except (NotFound, Refusal):
+        return False
 
 
 def occupants(runs_dir, path):
@@ -136,6 +149,10 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
             return
     if path.exists() and not (path / ".git").exists():
         # A checkout `git worktree add` never finished (killed partway) has no .git of its own — git would answer for the repository around it instead — and git refuses to remove it; only such a one is deleted by hand, and only with --force.
+        unfinished, why = left_unfinished(repo, path)
+        if not unfinished:
+            kept.append({**entry, "reason": f"it has no .git and is not a checkout git left unfinished, so it is not deleted: {why}"})
+            return
         if not force:
             kept.append({**entry, "reason": "a checkout git never finished making (no .git in it); clean --force removes it", "instead": invocation("clean", "--group", group, "--force", *registry_args(runs_dir))})
             return
@@ -161,9 +178,15 @@ def clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=None, lan
             kept.append({**entry, "reason": f"{detached} commit(s) on a detached HEAD that no branch holds; put them on a branch first", "instead": f"git -C {path} branch <name>"})
             return
         stranded = submodule_commits_only_here(str(path), repo)
+        if stranded is None:
+            kept.append({**entry, "reason": "its submodules' stores could not all be listed, so whether they hold commits only here is not known"})
+            return
         if stranded:
             # A submodule's commits made in this checkout are stored only in it; they are kept whatever --force says, as detached commits are.
-            kept.append({**entry, "reason": f"submodule(s) {', '.join(stranded)} hold commits your checkout's copy does not have, which removing it would lose", "instead": f"fetch them into your checkout first: git -C <your submodule> fetch {path}/<submodule> HEAD"})
+            # Into refs no earlier keeping used, so no fetch is refused for a ref it would move; HEAD by name, since a fetch keeps it only in FETCH_HEAD otherwise.
+            under = f"refs/delegate/{group}-{slot['index']}-{time.strftime('%Y%m%d%H%M%S')}-{os.getpid()}"
+            fetches = [f"git {'--git-dir=' + shlex.quote(s['main_store']) if s['main_store'] else '-C ' + shlex.quote('<your copy of ' + s['submodule'] + '>')} fetch {shlex.quote(s['store'])} {shlex.quote(f'HEAD:{under}/HEAD')} {shlex.quote(f'refs/*:{under}/*')}" for s in stranded]
+            kept.append({**entry, "reason": f"submodule(s) {', '.join(s['submodule'] for s in stranded)} hold commits your checkout's copy does not hold under a ref, which removing it would lose", "instead": "fetch them into your checkout first: " + " && ".join(fetches)})
             return
         artifacts = (meta or {}).get("startup_artifacts") or {}
         left = leftovers(path, repo, artifacts)

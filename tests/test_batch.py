@@ -63,6 +63,20 @@ class Batch(Sandbox):
         fresh = [c for c in worker_calls(self.fake_calls()) if c["env"]["DELEGATE_RUN"] == reply["runs"][1]["run_id"]][0]
         self.assertEqual((flag_value(fresh["argv"], "--permission-mode"), flag_value(fresh["argv"], "--effort")), ("dontAsk", "low"))
 
+    def test_a_resume_refused_for_a_live_run_starts_nothing(self):
+        # GPT review after PR 3, finding 7: the refusal names the live run, which this batch did not start.
+        live = self.start("busy [[fake:sleep:20]]")
+        self.wait_for(lambda: self.status(live["run_id"]).get("native_id"), what="the session id")
+        f = self.root / "tasks.jsonl"
+        f.write_text(json.dumps({"prompt": "again", "kind": "resume", "resume": live["run_id"]}) + "\n")
+        reply = self.batch("--group", "busy", "--tasks-file", str(f))
+        self.cli_json("stop", "--run", live["run_id"])
+        (row,) = reply["runs"]
+        self.assertIn("live run", row["error"])
+        self.assertEqual((reply["spawned"], row["run_id"], "next" in reply), (0, None, False), reply)
+        self.assertEqual(row["existing_run_id"], live["run_id"])
+        self.assertEqual([m.get("run_id") for m in self.cli_json("status", "--group", "busy")["members"]], [None])
+
     def test_invalid_batches_are_refused_before_anything_starts(self):
         f = self.root / "bad.jsonl"
         cases = [

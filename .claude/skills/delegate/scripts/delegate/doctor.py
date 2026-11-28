@@ -59,7 +59,8 @@ def doctor(*, cwd, engine=None, runs_dir=None):
             if path:
                 owner[os.path.realpath(path)] = g["name"]
     repo = main_checkout(cwd)
-    reg["worktrees"] = [{"path": e["path"], "branch": e["branch"], "group": owner.get(os.path.realpath(e["path"]))} for e in (worktree_entries(repo) if repo else []) if "/.claude/worktrees/" in e["path"] or (DIRNAME in e["path"] and e["path"].endswith("/wt"))]
+    # A path a group's slot records is listed wherever its registry is: a codex checkout given --runs-dir is not under .delegate-runs.
+    reg["worktrees"] = [{"path": e["path"], "branch": e["branch"], "group": owner.get(os.path.realpath(e["path"]))} for e in (worktree_entries(repo) if repo else []) if "/.claude/worktrees/" in e["path"] or (DIRNAME in e["path"] and e["path"].endswith("/wt")) or os.path.realpath(e["path"]) in owner]
     sched, sched_warnings = schedule_readiness_within(cwd, registry, timings()["doctor_gh_wait"])
     warnings += sched_warnings
     return {

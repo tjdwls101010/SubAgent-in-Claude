@@ -120,7 +120,11 @@ class CleanAgainstWorkInsideACheckout(Sandbox):
     def test_a_checkout_git_never_finished_is_removed_only_by_force(self):
         member = self.batch("half")
         wt = member["worktree"]
+        # As `git worktree add` killed partway leaves it: still under the `initializing` lock it holds for the whole add, and no .git yet. No .git alone is not that (GPT review of the clean fixes, finding 1).
+        admin = __import__("pathlib").Path(git(wt, "rev-parse", "--absolute-git-dir"))
         (__import__("pathlib").Path(wt) / ".git").unlink()
+        self.assertEqual([k["index"] for k in self.cli_json("clean", "--group", "half", "--force")["kept"]], [1])
+        (admin / "locked").write_text("initializing")
         kept = self.cli_json("clean", "--group", "half")
         self.assertFalse(kept["name_released"])
         forced = self.cli_json("clean", "--group", "half", "--force")
