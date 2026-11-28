@@ -1,6 +1,6 @@
 {
   "name": "delegate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Background workers on two engines — GPT through the local Codex CLI, Claude through headless Claude Code — managed like subagents: start, watch, steer, stop, resume, mixed groups, results, usage limits, and scheduled Claude workers.",
   "author": {"name": "tjdwls101010", "url": "https://github.com/tjdwls101010"},
   "homepage": "https://github.com/tjdwls101010/SubAgent-in-Claude",

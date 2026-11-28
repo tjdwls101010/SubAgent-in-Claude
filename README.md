@@ -99,6 +99,6 @@ Every run spends the subscription's limits with nobody watching. A run the usage
 
 ## 6. Project Status
 
-Version 0.1.0. Verified on macOS with Claude Code 2.1.332 and the Codex CLI 0.167.1; scheduling with gh and a self-hosted runner on a private repository. Not included: Linux and Windows verification, scheduled GPT workers, messages into a running GPT worker, workers that message each other directly (run rounds with `batch` and `resume`). See [CHANGELOG.md](CHANGELOG.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+Version 0.1.1. Verified on macOS with Claude Code 2.1.332 and the Codex CLI 0.167.1; scheduling with gh and a self-hosted runner on a private repository. Not included: Linux and Windows verification, scheduled GPT workers, messages into a running GPT worker, workers that message each other directly (run rounds with `batch` and `resume`). See [CHANGELOG.md](CHANGELOG.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Licensed under the Apache License 2.0.
