@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -388,3 +389,18 @@ class MoveReview(MoveWorld):
         self.assertNotEqual(inv["done"]["class"], "finished", inv["done"])
         self.through("freeze", "state", "publish")
         self.assertIn("done.yml", self.files(), "the schedule made again is not deleted")
+
+    def test_a_rollback_waits_for_a_worker_still_running_on_this_mac(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        # Its Actions job was cancelled, and the worker it started goes on here.
+        origin = {"kind": "schedule", "name": "nightly", "trigger": "dispatcher", "slot": ts(18, 3), "job": "9-1"}
+        worker = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        self.addCleanup(lambda: (worker.kill(), worker.wait()))
+        run_id, run_dir, _ = registry.publish_run(str(self.runs_dir()), "s-9-1", lambda existing: None, lambda rid, d: {"state": "running", "supervisor_pid": worker.pid, "supervisor_pgid": worker.pid, "settings": {"profile": "full"}, "origin": origin})
+        out = self.job("rollback", "--only", "nightly", expect=3)
+        self.assertEqual(out["results"][0]["status"], "waiting")
+        self.assertIsNone(self.plist(OLD_PREFIX + "nightly"), "the old side does not start while the new one still works")
+        registry.update_meta(run_dir, lambda m: m.update({"state": "completed"}))
+        self.job("rollback", "--only", "nightly")
+        self.assertTrue(self.plist(OLD_PREFIX + "nightly"))

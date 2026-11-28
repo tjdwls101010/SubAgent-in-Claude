@@ -13,7 +13,7 @@ from pathlib import Path
 from delegate.errors import Refusal
 from delegate.github import delete_workflow, dispatch_workflow, gh_path, parse_spec, read_workflow, render_workflow, set_workflow_enabled, unfinished_runs, workflow_state, write_workflow
 from delegate.launchd import agent_state, agents_dir, calendar_entries, install_agent, load_agent, remove_agent
-from delegate.registry import read_meta, schedule_lock, schedule_state, take_over_legacy_state, write_definition
+from delegate.registry import read_meta, schedule_lock, schedule_runs_live, schedule_state, take_over_legacy_state, write_definition
 from delegate.schedule import dispatcher_argv, dispatcher_label, dispatcher_log, fields_of, fire_times, legacy_dispatcher_label, merge
 
 from .inventory import OLD_REGISTRY, at_instant, completed_slot, old_state
@@ -268,8 +268,10 @@ def rollback(j: Journal, row, ctx):
     if row["class"] != "finished" and (s.get("published") or s.get("pending") or s.get("new_dispatcher")):
         set_workflow_enabled(ctx["repo"], row["file"], False)
         pending = unfinished_runs(ctx["repo"], row["file"])
-        if pending:
-            raise NotYet(f"{name}: {len(pending)} run(s) of its workflow are not finished; run the rollback again once they end")
+        # A worker can outlive its Actions job (a cancelled job leaves it running here): the old side starts only once this skill's are over too.
+        live = schedule_runs_live(ctx["registry"], name)
+        if pending or live:
+            raise NotYet(f"{name}: {len(pending)} run(s) of its workflow are not finished and {len(live)} worker(s) of this skill are live; run the rollback again once they end")
     note = {}
     new = schedule_state(ctx["registry"], name) or {}
     old_path = Path(ctx["project"]) / OLD_REGISTRY / ".schedules" / name / "state.json"
