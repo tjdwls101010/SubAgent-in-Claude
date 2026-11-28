@@ -5,7 +5,7 @@ Steps, each run with the same --project, each repeatable (what is done is skippe
     freeze      the old dispatchers moved out of launchd, the workflows disabled, then wait for their queues to drain (exit 3 while one is not)
     state       the old state.json of each schedule written as this skill's, definition kept
     publish     each moved workflow rewritten by this skill's renderer in one commit; each finished one-off's workflow deleted
-    resume      each moved workflow put in its expected state, then this skill's dispatcher installed; slots missed while frozen dispatched with their own slot; run it again until each dispatched slot is claimed (exit 3 while a dispatched run is still on its way; an ended run that claimed nothing is dispatched again)
+    resume      each moved workflow put in its expected state, then this skill's dispatcher installed; slots missed while frozen dispatched with their own slot; run it again until each dispatched slot is claimed (exit 3 while a dispatched run is still on its way, and after an ended run that claimed nothing is dispatched again)
     rollback    back to the claude skill, schedule by schedule
     verify      the transition's checks: every inventoried schedule accounted for, no workflow or dispatcher left that runs the old skill
 

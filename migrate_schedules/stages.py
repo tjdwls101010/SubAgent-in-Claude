@@ -60,6 +60,9 @@ def freeze(j: Journal, row, ctx):
         j.data["schedules"][name] = {}
         j.save()
         s = {}
+    if s.get("drained"):
+        # Drained means its workflow is off and its dispatcher gone, so no run can appear: asking GitHub again only spends the API limit the dispatchers not yet moved share.
+        return
     if not s.get("plist_moved"):
         label = legacy_dispatcher_label(ctx["repo"], name)
         if not s.get("frozen_at"):
@@ -235,7 +238,7 @@ def _recover_again(row, ctx, s):
         raise NotYet(f"{row['name']}: slot(s) {', '.join(open_)} were dispatched and are not claimed yet; {len(pending)} run(s) of its workflow are not finished")
     for key in open_:
         dispatch_workflow(ctx["repo"], row["file"], ctx["branch"], {"source": "dispatcher", "slot": key})
-    return {"dispatched_again": open_}
+    raise NotYet(f"{row['name']}: slot(s) {', '.join(open_)} dispatched again; run this step again once a run has claimed them")
 
 
 def _own_file(row, ctx, s, old_text):

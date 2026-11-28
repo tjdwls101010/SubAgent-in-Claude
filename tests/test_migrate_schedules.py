@@ -138,6 +138,14 @@ class Move(MoveWorld):
         self.world(w)
         self.assertTrue(all(r["status"] == "done" for r in self.job("freeze")["results"]))
 
+    def test_a_drained_schedule_is_not_asked_about_again(self):
+        # Once drained its workflow is off and its dispatcher gone, so no run can appear; asking GitHub again for each of 39 schedules on every pass spends the API limit the live dispatchers share.
+        self.job("inventory")
+        self.job("freeze")
+        asked = len([c for c in self.gh_calls() if c["argv"][:2] == ["run", "list"]])
+        self.job("freeze")
+        self.assertEqual(len([c for c in self.gh_calls() if c["argv"][:2] == ["run", "list"]]), asked)
+
     def test_a_step_that_failed_partway_goes_on_where_it_stopped(self):
         self.job("inventory")
         self.through("freeze", "state")
@@ -283,7 +291,7 @@ class MoveReview(MoveWorld):
         self.assertEqual({r["name"]: r["status"] for r in self.job("resume", now=later, expect=3)["results"]}["nightly"], "waiting", "a run still on its way may yet claim it")
         w["runs"][-1]["status"] = "completed"
         self.world(w)
-        self.job("resume", now=later)
+        self.assertEqual({r["name"]: r["status"] for r in self.job("resume", now=later, expect=3)["results"]}["nightly"], "waiting", "dispatched again: resume is not done until a run claims it")
         dispatched = [[a for a in c["argv"] if a.startswith("slot=")] for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]
         self.assertEqual(dispatched, [[f"slot={slot}"], [f"slot={slot}"]], "an ended run that claimed nothing is dispatched again")
         registry.claim_slot(str(self.runs_dir()), "nightly", slot, "44000000002-1", {"trigger": "recovery", "profile": "full"}, exact=True)
