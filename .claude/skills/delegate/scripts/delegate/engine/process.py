@@ -132,7 +132,7 @@ GATE = 'read -r go <&"$0" && [ "$go" = go ] && exec "$@"; exit 125'
 def record_stopped(m):
     """Record a stop that no worker process reported: interrupted, with every message that was never delivered — all of them when the worker never ran."""
     if m.get("state") not in TERMINAL:
-        m.update({"state": "interrupted", "error": "stopped", "ended_at": now(), "stdin_open": False, "undelivered": [x["uuid"] for x in m.get("messages") or [] if x.get("after_line") is None]})
+        m.update({"state": "interrupted", "error": "stopped", "ended_at": now(), "stdin_open": False, "undelivered": [x["uuid"] for x in m.get("messages") or [] if x.get("delivered_at") is None]})
 
 
 def supervise(run_dir, adapter):

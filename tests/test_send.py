@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import time
+import unittest
 
-from support.harness import FAST_TIMINGS, Sandbox
+from support.harness import FAST_TIMINGS, Sandbox, engine
 
 
 def worker_calls(calls):
@@ -31,6 +32,27 @@ class Send(Sandbox):
         self.assertEqual(call["messages"][1]["uuid"], sent["message_uuid"])
         log = self.cli("log", "--run", reply["run_id"]).stdout
         self.assertIn("sent next also this", log)
+
+    def test_a_message_the_worker_does_not_read_is_not_delivered(self):
+        """PR④ GPT review: a message bigger than the pipe, to a worker that reads nothing, is not `delivered` while its write is still blocked, and a stop then records it `undelivered`."""
+        import os
+        import signal
+
+        reply = self.start("first [[fake:sleep:30]]")
+        self.wait_state(reply["run_id"], states=("running",))
+        pid = json.loads((self.run_dir(reply["run_id"]) / "meta.json").read_text())["worker_pid"]
+        os.kill(pid, signal.SIGSTOP)
+        try:
+            sent = self.cli_json("send", reply["run_id"], input="x" * 1_000_000)
+            self.assertFalse(sent["delivered"], "a 1 MB message cannot fit in the pipe of a stopped reader")
+            self.cli_json("stop", "--run", reply["run_id"])
+        finally:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        row = self.wait_state(reply["run_id"])
+        self.assertEqual((row["state"], row["undelivered"]), ("interrupted", [sent["message_uuid"]]))
 
     def test_interrupt_ends_the_turn_and_answers_the_message(self):
         reply = self.start("first [[fake:sleep:30]]")
@@ -88,8 +110,11 @@ class Send(Sandbox):
         self.assertIn("result --run", send["instead"])
         self.assertIn("--wait", send["instead"])
         resume = self.cli_json("resume", reply["run_id"], "more", expect=1)
-        self.assertIn("stop --run", resume["instead"])
-        self.assertNotIn(" send ", resume["instead"])
+        # The answer is in: a stop would record it as interrupted, so the wait comes first and the stop is only the alternative.
+        self.assertIn("result --run", resume["instead"])
+        self.assertIn("--wait", resume["instead"])
+        self.assertIn("stop --run", resume["or"])
+        self.assertNotIn(" send ", resume["instead"] + resume["or"])
         self.cli_json("stop", "--run", reply["run_id"])
 
     def test_live_run_resume_points_to_send(self):
@@ -114,3 +139,58 @@ class Send(Sandbox):
         inside = self.cli_json("send", reply["run_id"], "hi", expect=1, env={"DELEGATE_RUN": "other"})
         self.assertIn("worker", inside["error"])
         self.cli_json("stop", "--run", reply["run_id"])
+
+
+class GatedStdin:
+    """A worker's stdin whose flush waits for `gate`: the write of a message completes only when the test says."""
+
+    def __init__(self):
+        import threading
+
+        self.gate, self.flushed = threading.Event(), threading.Event()
+
+    def write(self, data):
+        pass
+
+    def flush(self):
+        self.gate.wait(10)
+        self.flushed.set()
+
+    def close(self):
+        pass
+
+
+class ConfirmationAfterTheOutcome(unittest.TestCase):
+    """GPT review of the send fixes: a write that completes while the supervisor records the outcome, its confirmation waiting for the run's lock, is undelivered in the outcome, and the late confirmation does not contradict it."""
+
+    def test_a_write_confirmed_after_the_outcome_stays_undelivered(self):
+        import shutil
+        import tempfile
+        import threading
+        import types
+        from pathlib import Path
+
+        reg = engine("delegate.registry")
+        claude = engine("delegate.engine").adapter("claude")
+        root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        _, run_dir, _ = reg.publish_run(str(root / "runs"), "t", lambda runs: None, lambda r, d: {"engine": "claude", "native_id": "s", "state": "running", "stdin_open": True, "settings": {"profile": "write"}})
+        reg.enqueue(run_dir, "u1", "hello")
+        stdin = GatedStdin()
+        driver = claude.driver(run_dir, reg.read_meta(run_dir), types.SimpleNamespace(stdin=stdin, pid=None, poll=lambda: None))
+        driver.bind(types.SimpleNamespace(lock=threading.Lock(), lines=0, last_line_at=time.time()))
+        driver.tick()  # hands u1 to the writer, whose flush waits on the gate
+
+        def finish(m):
+            # As the supervisor records an outcome, under the run's lock: the write completes meanwhile, and its confirmation waits for the lock.
+            stdin.gate.set()
+            self.assertTrue(stdin.flushed.wait(10))
+            time.sleep(0.3)
+            m.update(driver.outcome(m, -9, ""))
+
+        reg.update_meta(run_dir, finish)
+        time.sleep(0.5)  # the confirmation, let through the lock now
+        meta = reg.read_meta(run_dir)
+        self.assertEqual(meta["undelivered"], ["u1"])
+        self.assertIsNone(meta["messages"][0]["delivered_at"], "a confirmation after the outcome does not contradict it")
+

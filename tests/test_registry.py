@@ -6,15 +6,39 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from support.harness import engine, git, make_repo
+from support.harness import SCRIPTS, engine, git, make_repo
 
 reg = engine("delegate.registry")
 Refusal = engine("delegate.errors").Refusal
+
+
+# A process that calls one inbox operation and dies at its `n`th file write, before it (`before`) or right after it (`after`): a sender or supervisor killed mid-operation.
+DIE_IN = r"""
+import os, sys
+import delegate.registry.inbox as inbox
+run_dir, op, uuid, n, when = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
+real, count = inbox.write_json, [0]
+def write_json(path, obj):
+    count[0] += 1
+    if count[0] == n and when == "before":
+        os._exit(9)
+    real(path, obj)
+    if count[0] == n:
+        os._exit(9)
+inbox.write_json = write_json
+inbox.enqueue(run_dir, uuid, "hello") if op == "enqueue" else inbox.confirm(run_dir, uuid)
+"""
+
+
+def die_in(run_dir, op, uuid, n, when):
+    proc = subprocess.run([sys.executable, "-c", DIE_IN, str(run_dir), op, uuid, str(n), when], env={**os.environ, "PYTHONPATH": str(SCRIPTS)}, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 9, proc.stderr
 
 
 def sleeper():
@@ -97,6 +121,20 @@ class Runs(unittest.TestCase):
         self.assertEqual(meta["state"], "orphaned")
         self.assertEqual(meta["undelivered"], ["uuid-1"])
 
+    def test_reap_lists_what_no_confirmation_recorded(self):
+        """GPT review of the send fixes: a supervisor killed inside `confirm`, before it recorded the write or right after, leaves `undelivered` exactly the message whose write is not on record."""
+        p = subprocess.Popen(["true"], start_new_session=True)
+        p.wait()
+        _, run_dir, _ = self.publish(supervisor_pid=p.pid, supervisor_pgid=p.pid, state="running")
+        reg.enqueue(run_dir, "u1", "one")
+        reg.enqueue(run_dir, "u2", "two")
+        reg.take(run_dir, lambda m: None, lambda: 0)
+        die_in(run_dir, "confirm", "u1", 1, "before")
+        die_in(run_dir, "confirm", "u2", 1, "after")
+        meta = reg.reap(run_dir)
+        self.assertEqual(meta["undelivered"], ["u1"])
+        self.assertEqual([m["uuid"] for m in meta["messages"] if m["delivered_at"]], ["u2"])
+
     def test_reap_leaves_a_live_supervisor_and_a_fresh_unsupervised_run(self):
         s = sleeper()
         self.addCleanup(s.kill)
@@ -168,10 +206,25 @@ class Inbox(unittest.TestCase):
         self.assertEqual([m["text"] for m in written], ["first", "second"])
         msgs = reg.read_meta(self.run_dir)["messages"]
         self.assertEqual([(m["uuid"], m["after_line"], m["kind"], m["priority"]) for m in msgs], [("u1", 7, "prompt", None), ("u2", 7, "send", "now")])
+        self.assertEqual([m["delivered_at"] for m in msgs], [None, None], "handed to the writer is not yet written")
+        self.assertEqual(reg.take(self.run_dir, written.append, lambda: 9), [], "a message handed once is not handed again")
+        self.assertFalse(reg.close(self.run_dir, lambda meta: True), "closes while a write is unconfirmed")
+        reg.confirm(self.run_dir, "u1")
+        reg.confirm(self.run_dir, "u2")
+        self.assertTrue(all(m["delivered_at"] for m in reg.read_meta(self.run_dir)["messages"]))
         self.assertFalse(reg.close(self.run_dir, lambda meta: False))
         self.assertTrue(reg.close(self.run_dir, lambda meta: True))
         self.assertEqual(reg.enqueue(self.run_dir, "u3", "late"), "closed")
         self.assertEqual(reg.take(self.run_dir, written.append, lambda: 0), [])
+
+    def test_a_sender_that_died_mid_enqueue_leaves_nothing_to_deliver(self):
+        """GPT review of the send fixes: a sender killed after writing the payload but before recording its entry never got a reply, so the message is not written to the worker — least of all once per poll."""
+        die_in(self.run_dir, "enqueue", "u1", 2, "before")
+        written = []
+        self.assertEqual(reg.take(self.run_dir, written.append, lambda: 0), [])
+        self.assertEqual(reg.take(self.run_dir, written.append, lambda: 0), [])
+        self.assertEqual(written, [])
+        self.assertEqual(reg.pending(self.run_dir), [], "the incomplete enqueue is discarded")
 
     def test_send_limit(self):
         for i in range(3):

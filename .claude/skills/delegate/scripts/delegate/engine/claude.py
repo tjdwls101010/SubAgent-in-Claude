@@ -14,7 +14,7 @@ from pathlib import Path
 from delegate.claude_cli import EFFORTS, PROFILES, worktree_location, VERIFIED_VERSION, quota as usage_report, VERSION_FLOOR, VERSION_FLOOR_TEXT, activity_rows, auth_status, build_argv, model_aliases, claude_version, encode_user_message, final_result, profile_exceptions, read_events, render_rows, sandbox_prereqs, summarize, turn_preamble, version_floor_check, worker_env
 from delegate.errors import Refusal
 from delegate.git import branch_exists, main_checkout, startup_snapshot, toplevel
-from delegate.registry import TERMINAL, close, enqueue, is_live, iter_runs, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
+from delegate.registry import TERMINAL, close, confirm, enqueue, is_live, iter_runs, newest_on, read_meta, reap, registry_args, supervisor_alive, take, update_meta, worker_alive
 from delegate.util import invocation, iso, now, timings
 
 NAME = "claude"
@@ -158,10 +158,12 @@ def reply_fields(meta):
 
 
 def live_instead(run_id, meta, runs_dir):
-    """What to do instead of starting another run on a session that has a live one: send to it while its stdin is open, otherwise stop it first."""
+    """What to do instead of starting another run on a session that has a live one: send to it while its stdin is open; wait for it once its answer is in (a stop would record that answer as interrupted), with stopping it first as the alternative; otherwise stop it first."""
     extra = registry_args(runs_dir)
     if meta.get("state") in ("starting", "running") and meta.get("stdin_open") and supervisor_alive(meta):
         return {"instead": invocation("send", run_id, "<message>", *extra), "why": "the run is live and still reading messages"}
+    if meta.get("state") in ("starting", "running", "finishing") and supervisor_alive(meta):
+        return {"instead": f"{invocation('result', '--run', run_id, '--wait', *extra)}, then resume", "or": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run no longer reads messages: its answer is in or coming, and a stop now would record it as interrupted"}
     return {"instead": f"{invocation('stop', '--run', run_id, *extra)}, then resume", "why": "the run is finishing or its supervisor is gone while claude still runs"}
 
 
@@ -227,17 +229,17 @@ def is_worker_command(command):
 
 
 class StdinWriter:
-    """Writes messages to claude's stdin from a thread of its own, so a message bigger than the pipe, which claude has not started reading, never holds up the supervisor's loop (its deadline and stop) or the run's lock. `close()` closes stdin once everything queued is written."""
+    """Writes messages to claude's stdin from a thread of its own, so a message bigger than the pipe, which claude has not started reading, never holds up the supervisor's loop (its deadline and stop) or the run's lock. `on_written(uuid)` is called once a message is written and flushed in full. `close()` closes stdin once everything queued is written."""
 
-    def __init__(self, stdin, on_error):
+    def __init__(self, stdin, on_error, on_written):
         import queue
 
         self.stdin = stdin
         self.on_error = on_error
+        self.on_written = on_written
         self.queue = queue.Queue()
         self.lock = threading.Lock()
         self.pending = 0
-        self.written = set()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -256,8 +258,7 @@ class StdinWriter:
             finally:
                 with self.lock:
                     self.pending -= 1
-            with self.lock:
-                self.written.add(uuid)
+            self.on_written(uuid)
         try:
             self.stdin.close()
         except OSError:
@@ -272,10 +273,6 @@ class StdinWriter:
         """Whether a queued message is not yet fully written."""
         with self.lock:
             return self.pending > 0
-
-    def was_written(self, uuid):
-        with self.lock:
-            return uuid in self.written
 
     def close(self):
         self.queue.put(None)
@@ -305,7 +302,7 @@ class Driver:
         self.wt = meta.get("worktree")
         from .process import log
 
-        self.writer = StdinWriter(proc.stdin, lambda e: log(run_dir, f"stdin write failed: {e}"))
+        self.writer = StdinWriter(proc.stdin, lambda e: log(run_dir, f"stdin write failed: {e}"), lambda uuid: confirm(run_dir, uuid))
 
     def bind(self, pump):
         self.pump = pump
@@ -329,7 +326,7 @@ class Driver:
             self.init_done.set()
 
     def _deliver(self, msg):
-        # Handed to the writer: delivery is recorded under the run's lock, and the write itself happens outside it.
+        # Handed to the writer under the run's lock; the write happens outside it, and the writer confirms delivery once it is done.
         self.writer.put(msg["uuid"], encode_user_message(msg["text"], msg["uuid"], msg.get("priority")).encode("utf-8"))
 
     def _lines_read(self):
@@ -431,9 +428,10 @@ class Driver:
             # The process can end between two polls; its init is still part of what the run reported.
             fields.update({"init": init, "mode_mismatch": init["permission_mode"] != EXPECTED_MODE.get(self.profile)})
         events, unparsed = read_events(Path(self.run_dir) / "events.jsonl")
+        # What the run's lock has on record, not what the writer did: a confirmation still waiting for the lock is refused once this outcome is written (`confirm`), so the two never disagree.
         messages = meta.get("messages") or []
         final = final_result(events, messages)
-        fields.update({"exit_code": returncode, "ended_at": now(), "unanswered": [m["uuid"] for m in final["unanswered"]], "undelivered": [m["uuid"] for m in messages if m.get("after_line") is None or not self.writer.was_written(m["uuid"])], "unparsed_events": unparsed})
+        fields.update({"exit_code": returncode, "ended_at": now(), "unanswered": [m["uuid"] for m in final["unanswered"]], "undelivered": [m["uuid"] for m in messages if m.get("delivered_at") is None], "unparsed_events": unparsed})
         result = final["result"]
         if meta.get("cwd_mismatch"):
             state, error = "failed", meta["cwd_mismatch"]

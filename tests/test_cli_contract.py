@@ -57,6 +57,12 @@ class Help(unittest.TestCase):
         line = next(l for l in start.splitlines() if l.lstrip().startswith("read-only  codex:"))
         self.assertIn("claude: reads anything, and runs any shell command inside a sandbox that can write only its TMPDIR and ~/.cache", line, "one profile, both engines, one line")
 
+    def test_group_wait_names_the_failure_baseline(self):
+        """PR④ GPT review: a failure ends a group wait unless a group wait already reported it, even when it came before the wait began (FailuresAroundWaits)."""
+        out = subcommand_help("result")
+        self.assertNotIn("a member already failed", out)
+        self.assertIn("a failure a group wait already reported", out)
+
     def test_closed_sets_are_choices(self):
         start = subcommand_help("start")
         self.assertIn("{read-only,write,full}", start)
