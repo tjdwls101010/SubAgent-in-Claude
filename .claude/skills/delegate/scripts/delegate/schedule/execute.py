@@ -43,7 +43,7 @@ AUTOMATIC = ("dispatcher", "schedule", "recovery")
 # How much of the earlier schedules' worktree groups one Finish looks at, so the summary and the one-off's end still have their time (K20).
 SWEEP_GROUPS = 10
 SWEEP_SECONDS = 60
-RED = ("failed", "timed_out", "orphaned", "interrupted")
+RED = ("failed", "timed_out", "orphaned", "interrupted", "quota_exhausted")
 
 
 def clock():
@@ -404,7 +404,7 @@ NOT_COMPLETED = ("failed", "timed_out", "orphaned")
 
 
 def _end_one_off(spec, ctx, registry, rec, state):
-    """K8: a one-off's automatic job turns its schedule off once its time will not be tried again — the run completed, it was stopped, it was a writer (never retried), it was itself the retry, or the time is long past — and only while the definition this job was started from is still the one this Mac recorded (a schedule called again or removed meanwhile is not touched). Returns (notes, warnings) for the summary."""
+    """K8: a one-off's automatic job turns its schedule off once its time will not be tried again — the run completed, it was stopped, a usage limit ended it (never retried), it was a writer (never retried), it was itself the retry, or the time is long past — and only while the definition this job was started from is still the one this Mac recorded (a schedule called again or removed meanwhile is not touched). Returns (notes, warnings) for the summary."""
     if not spec.get("at") or rec.get("trigger") not in AUTOMATIC:
         return [], []
     outcome = (rec.get("outcome") or {}).get("kind")

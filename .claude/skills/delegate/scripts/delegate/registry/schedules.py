@@ -92,7 +92,7 @@ def _job_run(registry, name, job):
 
 
 def _completed_or_live(registry, name, state, job):
-    """Whether the job that filled a slot got somewhere that a retry must not repeat: its run completed, was stopped, or is still live. A refusal before any run, and a run that failed, timed out or was orphaned, did not."""
+    """Whether the job that filled a slot got somewhere that a retry must not repeat: its run completed, was stopped, was ended by a usage limit (`quota_exhausted`: such a slot is not tried again), or is still live. A refusal before any run, and a run that failed, timed out or was orphaned, did not."""
     meta = _job_run(registry, name, job)
     if meta is None:
         rec = state["jobs"].get(job) or {}

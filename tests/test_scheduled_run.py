@@ -256,6 +256,22 @@ class Slots(Job):
         self.assertEqual(len(self.worker_calls()), 2)
         self.assertIn("skipped", run.stdout)
 
+    def test_a_slot_the_usage_limit_ended_is_red_and_not_tried_again(self):
+        # The owner's decision: a run the limit ended is a failure, reported with when the limit resets, and its slot is not retried, read-only included.
+        before = time.time()
+        run, summary = self.auto("1", prompt="x [[fake:ratelimit:rejected]] [[fake:error]]")
+        after = time.time()
+        self.assertEqual((run.returncode, self.scheduled_runs()[0]["state"]), (1, "quota_exhausted"), run.stdout)
+        self.assertTrue(summary.startswith("# ❌ nightly · quota_exhausted\n"), summary[:200])
+        first = summary.split("[!CAUTION]", 1)[1].splitlines()[1]
+        # The fake engine's rejection resets an hour after it is sent.
+        resets = {time.strftime("%Y-%m-%d %H:%M", time.gmtime(t + 3600 + 9 * 3600)) + " KST" for t in (before, after)}
+        self.assertIn("quota_exhausted", first)
+        self.assertTrue(any(f"until {r}" in first for r in resets), first)
+        run, summary = self.auto("2", source="", event="schedule")
+        self.assertIn("skipped", run.stdout)
+        self.assertEqual(len(self.worker_calls()), 1)
+
     def test_the_retry_of_a_refused_start_says_so(self):
         env = self.job_env(run_id="1", source="dispatcher", extra={"FAKE_CLAUDE_VERSION": "1.0.0"})
         run, finish, summary = self.job(env)

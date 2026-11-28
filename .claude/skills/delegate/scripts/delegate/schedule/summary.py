@@ -26,7 +26,7 @@ TOTAL_BYTES = 900_000
 DETAIL_CHARS = 100
 EXCERPT_BYTES = 1_200
 
-RED = ("failed", "timed_out", "orphaned")
+RED = ("failed", "timed_out", "orphaned", "quota_exhausted")
 TOOL_ROWS = ("bash", "read", "edit", "write", "grep", "glob", "fetch", "search", "skill", "agent", "mcp", "tool", "denied", "retry", "compact", "task", "result", "running")
 EXPECTED_MODE = {"read-only": "dontAsk", "write": "acceptEdits", "auto": "auto"}
 
@@ -255,7 +255,12 @@ def _alerts(snapshot, context):
         meta, header = snapshot["meta"], snapshot["header"]
         state = meta.get("state")
         if state in RED:
-            caution.append({"failed": "**The run failed.**", "timed_out": "**The run timed out.**", "orphaned": "**The run's supervisor died before recording an outcome.**"}[state] + (f" {code_span(_one_line(meta.get('error'), 300))}" if meta.get("error") else ""))
+            if state == "quota_exhausted":
+                resets, tz = meta.get("resets_at"), context["timezone"]
+                head = "**The run ended `quota_exhausted`: the account's usage limit is used up" + (f" until {_local(resets, tz, '%Y-%m-%d %H:%M')} {_zone(resets, tz)}" if isinstance(resets, (int, float)) else "") + ". This time is not tried again.**"
+            else:
+                head = {"failed": "**The run failed.**", "timed_out": "**The run timed out.**", "orphaned": "**The run's supervisor died before recording an outcome.**"}[state]
+            caution.append(head + (f" {code_span(_one_line(meta.get('error'), 300))}" if meta.get("error") else ""))
             last = (snapshot.get("text") or "").strip()
             if last:
                 caution.append(f"Last message: {_one_line(last, 300)}")

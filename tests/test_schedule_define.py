@@ -1006,6 +1006,15 @@ class OneOff(Scheduling):
         self.assertEqual(self.wf_state(), "disabled_manually")
         self.assertIsNone(self.plist())
 
+    def test_a_read_only_one_off_the_usage_limit_ended_is_turned_off(self):
+        # The owner's decision: a time the limit ended is not tried again, so the one-off ends as a failed writer does.
+        spec = self.make()
+        run, finish, summary = self.job(spec, "1", "x [[fake:ratelimit:rejected]] [[fake:error]]")
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertIn("::error title=nightly failed::", finish.stdout)
+        self.assertEqual(self.wf_state(), "disabled_manually")
+        self.assertIsNone(self.plist())
+
     def test_a_failed_writer_is_turned_off_at_once(self):
         spec = self.make(profile="write")
         self.job(spec, "1", "x [[fake:auth_fail]]")
