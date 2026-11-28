@@ -26,6 +26,7 @@ from delegate.errors import Refusal
 from delegate.models import models
 from delegate.observe import GROUP_MESSAGE_CAP, LISTING_ROWS, STALL_SECONDS, log, result, status
 from delegate.runs import refuse_inside_worker, resume, send, start, stop
+from delegate.schedule import SCHEDULE_DEFAULTS, SCHEDULE_ENGINES, schedule, scheduled_finish, scheduled_run, schedules, unschedule
 
 EXIT_REFUSED, EXIT_ARGUMENTS, EXIT_BLOCKED = 1, 2, 3
 
@@ -135,9 +136,28 @@ Exits: 0 printed, whatever could not be read (it says so); 2 an argument the par
 
 DOCTOR_DESC = """\
 The environment a run would start in, checked without starting a worker: Python; per engine its CLI on PATH and version against the floor the skill needs, login, what its sandboxed profiles need on this platform, and settings in your files that widen them; and the registry with its live runs.
-Prints: one JSON line — `ok`, `blockers`, `warnings` (each prefixed with its engine), `python`, `engines` (per engine `ok`, `blockers`, `warnings` and its report — each with `quota` as `models` prints it; codex: `path`, `installed`, `version`, `isolation`, `read_only_scratch`, `login` (`ok`, `cause`, `detail`), `codex_home`, `codex_home_from_env`, `config` (`path`, `sandbox_mode`, `approval_policy` — which runs do not read); claude: `path`, `version`, `floor`, `verified`, `auth` (`loggedIn`, `authMethod`, `subscriptionType`, `apiProvider`), `sandbox` (`platform`, `supported`, `missing`), `profile_exceptions` per profile), `skill_dir`, `entry`, `invocation` (the command form the pre-approval matches), `registry` (`path`, `exists`, `writable`, `live_runs`, `groups`, `worktrees` — every checkout a group made that git still records, with the `group` it belongs to).
+Prints: one JSON line — `ok`, `blockers`, `warnings` (each prefixed with its engine), `python`, `engines` (per engine `ok`, `blockers`, `warnings` and its report — each with `quota` as `models` prints it; codex: `path`, `installed`, `version`, `isolation`, `read_only_scratch`, `login` (`ok`, `cause`, `detail`), `codex_home`, `codex_home_from_env`, `config` (`path`, `sandbox_mode`, `approval_policy` — which runs do not read); claude: `path`, `version`, `floor`, `verified`, `auth` (`loggedIn`, `authMethod`, `subscriptionType`, `apiProvider`), `sandbox` (`platform`, `supported`, `missing`), `profile_exceptions` per profile), `skill_dir`, `entry`, `invocation` (the command form the pre-approval matches), `registry` (`path`, `exists`, `writable`, `live_runs`, `groups`, `worktrees` — every checkout a group made that git still records, with the `group` it belongs to), and `schedule`: what scheduling would need from here — `platform_ok`, `gh` (`path`, `logged_in`, `workflow_scope`), `repo` (`name`, `private`, `default_branch`, or `error`), `runners` (`registered`, this Mac's services in `local`, and `problems` as `schedule` reports them) — and `unfinished_one_offs`: one-offs whose run ended but whose workflow is still enabled or whose dispatcher is still on this Mac, each with `name`, `job`, `why` and `instead`. This doctor runs in your login session and cannot see what a runner's service sees; a check run (`schedule`'s `next`) proves that. What scheduling lacks is a warning, never a blocker.
 Exits: 0 no blocker; 3 a blocker would stop every run of an engine checked — its CLI too old or not logged in, Python below 3.11, a registry that cannot be written; an engine whose CLI is not installed is a blocker only when --engine names it, and a warning otherwise (its own `ok` stays false), but no engine installed at all is a blocker; 2 an argument the parser refuses."""
 
+
+SCHEDULE_DESC = """\
+Run a worker later, once or on a schedule, unattended on this Mac, with GitHub Actions as its record and controls. Commits .github/workflows/NAME.yml to the repository's default branch through the GitHub API (no pull request; it holds the prompt, which stays in git history after `unschedule`) and installs a LaunchAgent on this Mac that starts the workflow on time; GitHub's own cron in the file is a late backup, and a late duplicate of a time that already ran is skipped. Each run is a job on this repository's self-hosted runner: the worker starts as `start` would, nobody can answer it, the job holds it until it ends (--timeout is its limit; attention is only a warning), and the job's summary shows the prompt, the answer, the changes, the activity and how to continue it here. A read-only run that failed, timed out or lost its supervisor (not one that completed, was stopped or was ended by a usage limit) is tried once more by the next automatic trigger for the same time. A scheduled run is not held back by a usage limit known to be used up, as `start` is: it starts, fails on the limit (`quota_exhausted`; that time is not tried again, read-only or not), and its summary says so.
+A schedule the `claude` skill wrote is listed, changed and removed here too; calling `schedule` with its --name rewrites it for this skill, keeps its file and concurrency group, and replaces its dispatcher.
+Called again with the same --name, only the flags given change; everything else keeps what the committed workflow records, and the workflow is enabled again if it was disabled.
+Prints: one JSON line — `name`, `repo`, `workflow` (`status` committed or unchanged, `path`, `url`, `commit`, `was_disabled`), `dispatcher` (`status` installed or failed, `label`, `plist`, `error`), `fires` (`timezone`, `cron` or `at`, the `next` three times), `settings` (with `engine`), `local` (the checkout brought up to the default branch just written, as a run's end does — `status` updated, ref_updated (another branch is checked out; only the branch moved), current, not_updated (left alone: `reason`, `files`, and `instead`, what to run) or failed (`reason`); `branch`, `from`, `to`, the `commits` that came in, and `contains_commit` when this call committed; tried on every call that gets this far, so calling again completes an update left undone, and never the reason for a non-zero exit), `runner` (the repository's `registered` runners with `name`, `status`, `labels`; this Mac's runner services in `local` with `session_create`, `env_token`, `path_has`; and `problems`, each `problem` — none (no runner with every label the job asks for), offline (this Mac's runner), not_local, session_create, path_missing — with `why` and the `fixes`; `error` instead of `problems` when the runners could not be listed), `warnings`, and `next` (the check run that proves the runner can start a worker). With --dry-run nothing is written and the checkout is not touched: `workflow_text`, `dispatcher_text`, `fires`, `settings`, `runner`. With --list: `schedules` (per schedule `name`, `file`, `engine`, `cron` or `at`, `profile`, `state` active, disabled or unknown (GitHub has not registered the file yet), `dispatcher` loaded or missing, `stale_entry` with `stale_paths` and `fix` when a path in the workflow is gone, `last` job, and `written_by: claude skill` with its `fix` for one the `claude` skill wrote) and `orphans` (dispatchers whose workflow is gone).
+Exits: 0 committed and installed, or listed — a dispatcher that failed to install is still 0 and says so in `dispatcher`; 1 refused or failed — run from inside a worker, not macOS, gh missing, not logged in or without the `workflow` scope, not a git checkout with a GitHub remote, a public repository without --public-ok, a NAME.yml that is not this schedule, two workflow files that both say they are this schedule, a workflow directory GitHub did not list, a new name that differs from another workflow file or schedule only by letter case or Unicode form (one file on a Mac) or that Windows reserves (con, nul, com1 …), a dispatcher or state on this Mac that belongs to another schedule, or GitHub refused the commit (branch protection: `instead` says how to commit it through a pull request); 2 the command line must change — a name that breaks the rule, a new schedule without a prompt, --engine, --model, --effort, --profile or a time, a model or effort the engine does not take, both --cron and --at, a cron form or interval this skill does not take or one that never fires, an --at that has passed or is not zero-padded, a one-off whose time has passed called again without a new --at, --worktree with read-only, an unreadable --prompt-file or --schema, a prompt with a control character."""
+
+SCHEDULE_EPILOG = f"""\
+Time: --cron and --at are in this Mac's time zone, which launchd fires in and which the workflow's `timezone:` names; never convert them to UTC. --cron takes five numeric fields (minute hour day-of-month month day-of-week; `*`, `,`, `-`, `/`, no names like MON), fires at most every 5 minutes, and with both day fields restricted fires on either, as cron does. --at YYYY-MM-DDTHH:MM runs once; the run then disables its workflow and removes its dispatcher.
+The Mac must be awake: a time missed in sleep runs once on wake. A slot missed altogether can be filled later by dispatching the workflow with `-f source=dispatcher -f slot=<the slot's time in epoch seconds>`: it runs once as that slot, whatever ran after it, and a one-off filled so ends as its own time would have. A job waits up to 24 hours for this repository's runner to be online and free, then fails; one runner runs one job at a time, so a long worker holds back the repository's other jobs.
+Defaults: --timeout {SCHEDULE_DEFAULTS['timeout']}, --runs-on self-hosted; the job's own limit is --timeout plus 10 minutes. There is no default engine, model or effort: a new schedule names all three, and a schedule called again keeps what it recorded.
+Your checkout: when a run ends — completed, failed, timed out or cancelled — the job brings the default branch of the project checkout up to GitHub's, so what the worker merged there is on this Mac too. It fast-forwards the files when that branch is checked out, and otherwise moves only the branch. It never goes over anything of yours: a file you changed, an untracked or ignored file the update would replace, a commit only here, a merge or rebase in progress, a run working in the checkout itself, or an origin that is another repository leaves the checkout as it is, and the run's summary says why and what to run; the next run's end tries again. Hooks do not run, and git uses your own login, not the job's token. --no-pull leaves the checkout alone.
+The runs, their pause, re-run, cancel and logs are GitHub's: `gh workflow disable|enable`, `gh run list|view|rerun|cancel`, or the repository's Actions page."""
+
+UNSCHEDULE_DESC = """\
+Remove a schedule: unload and delete its dispatcher LaunchAgent, and delete its workflow file from the default branch through the GitHub API. Past runs stay in the repository's Actions history, and the prompt stays in git history. A run of the schedule still live keeps the schedule's local state until it ends, without its definition, so it disables nothing.
+Prints: one JSON line — `name`, `repo`, `dispatcher` (`status` removed, absent or failed, `label`, `plist`, `error`), `workflow` (`status` deleted, absent or failed, `path`, `commit`, `error`), `local` (as `schedule` gives it), and `note` when a live run kept the local state, or when this Mac's dispatcher or state under that name is another schedule's and was left alone.
+Exits: 0 every part was tried (each says how it went); 1 refused before anything was removed — run from inside a worker, not macOS, gh missing, not logged in or without the `workflow` scope, not a git checkout with a GitHub remote, a repository gh cannot see, a workflow file of that name that is not this schedule (left alone), two workflow files that both say they are this schedule, or a name this Mac holds for another schedule; 2 the command line must change — no --name, or one no schedule can have (`schedule --help` says what a name holds)."""
 
 class OneLinePerParagraph(argparse.HelpFormatter):
     """Each help paragraph and list item as one physical line, never re-wrapped; suppressed subcommands left out of the listing."""
@@ -159,7 +179,7 @@ class OneLinePerParagraph(argparse.HelpFormatter):
         return super()._format_action(action)
 
 
-VISIBLE = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "models", "doctor")
+VISIBLE = ("start", "resume", "send", "batch", "status", "log", "result", "stop", "clean", "models", "schedule", "unschedule", "doctor")
 
 
 class ArgumentError(Exception):
@@ -171,7 +191,7 @@ class ArgumentError(Exception):
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         name = self.prog.split()[-1] if " " in self.prog else None
-        raise ArgumentError(message, name if name in VISIBLE or name == "__supervise" else None)
+        raise ArgumentError(message, name if name in VISIBLE or name in ("__supervise", "__scheduled") else None)
 
 
 def positive(text):
@@ -279,12 +299,64 @@ def build_parser():
     p.add_argument("--engine", choices=tuple(ENGINES), help="only this engine (default: every engine)")
     add_registry(p)
 
+    p = sub.add_parser("schedule", usage="cli.py schedule --name NAME [PROMPT | --prompt-file FILE] (--cron EXPR | --at YYYY-MM-DDTHH:MM) --engine claude --model M --effort E --profile P [options]\n       cli.py schedule --list", help="run a worker later or on a schedule, through this repository's runner", description=SCHEDULE_DESC, epilog=SCHEDULE_EPILOG, formatter_class=OneLinePerParagraph)
+    p.add_argument("prompt", nargs="?", metavar="PROMPT", help="what the worker should do, standing on its own: nobody can answer it and nobody saw this conversation; or give --prompt-file. Required for a new schedule; given again, it replaces the recorded one")
+    p.add_argument("--prompt-file", metavar="FILE", help="read the prompt from FILE; `-` reads stdin (stdin is read only then)")
+    p.add_argument("--name", metavar="NAME", help="the schedule's name, used as given for the workflow file (.github/workflows/NAME.yml) and its title in Actions; a different name is a different workflow, and past runs stay with the old one. Up to 80 characters (an emoji counts as two); no `/` `\\` `:` `*` `?` `\"` `<` `>` `|`, no `${{`, no control or invisible character; not starting with `-` or a space, not ending with `.` or a space")
+    when = p.add_mutually_exclusive_group()
+    when.add_argument("--cron", metavar="EXPR", help="five numeric cron fields in this Mac's time zone, e.g. '0 3 * * *' (see below)")
+    when.add_argument("--at", metavar="YYYY-MM-DDTHH:MM", help="run once at this local time (this Mac's time zone)")
+    p.add_argument("--engine", choices=SCHEDULE_ENGINES, help="the engine the scheduled worker runs on; a schedule runs claude workers. Required for a new schedule — there is no default engine")
+    p.add_argument("--model", help="the model, as for start (see start --help). Required for a new schedule — there is no default model")
+    p.add_argument("--effort", help="the reasoning effort, as for start (see start --help). Required for a new schedule — there is no default effort")
+    p.add_argument("--profile", choices=PROFILES, help="what the worker may do (see start --help); required for a new schedule, since nobody is there to widen it")
+    p.add_argument("--schema", metavar="FILE", help="a JSON Schema file: the run's answer is structured output of that shape, shown as JSON in the summary; its text goes into the workflow, so the file may go")
+    p.add_argument("--timeout", type=positive, metavar="SEC", help=f"stop the run after SEC seconds and record it timed_out (default {SCHEDULE_DEFAULTS['timeout']})")
+    wt = p.add_mutually_exclusive_group()
+    wt.add_argument("--worktree", dest="worktree", action="store_const", const=True, help="run each time in a fresh git worktree of the local HEAD instead of the checkout (write and full only); a worktree without changes is removed, and so is one whose commits are already on GitHub — on the default branch, or the head of a pull request merged into it — with what it left uncommitted kept in git (refs/delegate/leftovers/…); one whose pull request is open, or with changes that are not on GitHub, is kept for you, and a later run's end looks at it again")
+    wt.add_argument("--no-worktree", dest="worktree", action="store_const", const=False, help="run in the project checkout as it is when the job starts (the default)")
+    pl = p.add_mutually_exclusive_group()
+    pl.add_argument("--pull", dest="pull", action="store_const", const=True, help="when each run ends, whatever its outcome, fast-forward the project checkout's default branch to what GitHub holds, so what the worker merged there is here too (the default; see below)")
+    pl.add_argument("--no-pull", dest="pull", action="store_const", const=False, help="leave the checkout as it is when a run ends: for a checkout someone works in on its default branch")
+    p.add_argument("--runs-on", metavar="LABEL", action="append", help="a label the runner must have besides self-hosted; repeat for several")
+    p.add_argument("--message", metavar="TEXT", help="the commit message (default: `Schedule ENGINE worker NAME: WHEN`)")
+    p.add_argument("--public-ok", action="store_true", help="allow a public repository, whose Actions logs and summaries anyone can read and whose self-hosted runner runs code from anyone's pull request on this Mac")
+    p.add_argument("--dry-run", action="store_true", help="write nothing: print the workflow and the dispatcher that would be written")
+    p.add_argument("--list", action="store_true", help="list this repository's schedules instead")
+    p.add_argument("--project", metavar="DIR", help="the project, a git checkout with a GitHub remote (default: the current directory)")
+
+    p = sub.add_parser("unschedule", usage="cli.py unschedule --name NAME [--message TEXT] [--project DIR]", help="remove a schedule's dispatcher and workflow", description=UNSCHEDULE_DESC, formatter_class=OneLinePerParagraph)
+    p.add_argument("--name", metavar="NAME", required=True, help="the schedule to remove")
+    p.add_argument("--message", metavar="TEXT", help="the commit message (default: `Unschedule worker NAME`)")
+    p.add_argument("--project", metavar="DIR", help="the project (default: the current directory)")
+
     p = sub.add_parser("doctor", usage="cli.py doctor [--engine E] [--project DIR]", help="check the environment a run would start in", description=DOCTOR_DESC, formatter_class=OneLinePerParagraph)
     p.add_argument("--engine", choices=tuple(ENGINES), help="check only this engine (default: every engine)")
     add_registry(p)
 
     p = sub.add_parser("__supervise", help=argparse.SUPPRESS)
     p.add_argument("--run-dir", required=True)
+
+    # A scheduled job's two steps (K1), written into the workflow by `schedule`; both take the same flags so Finish knows what Run was told. The job's environment carries DELEGATE_SCHEDULE_MODE (run or check), _SOURCE (dispatcher or empty), _SLOT (a recovery's slot, or empty), _PROMPT and _SCHEMA. A workflow the `claude` skill wrote names no --engine: it ran claude.
+    p = sub.add_parser("__scheduled", help=argparse.SUPPRESS)
+    p.add_argument("step", choices=("run", "finish"))
+    p.add_argument("--name", required=True)
+    p.add_argument("--project", required=True)
+    p.add_argument("--engine", choices=SCHEDULE_ENGINES, default="claude")
+    p.add_argument("--profile", choices=PROFILES, required=True)
+    p.add_argument("--model", required=True)
+    p.add_argument("--effort", required=True)
+    p.add_argument("--timeout", type=positive, required=True)
+    when = p.add_mutually_exclusive_group(required=True)
+    when.add_argument("--cron")
+    when.add_argument("--at")
+    p.add_argument("--timezone", required=True)
+    p.add_argument("--worktree", action="store_true")
+    p.add_argument("--no-pull", action="store_true")
+    p.add_argument("--workflow")
+    p.add_argument("--definition")
+    # Finish only, run again on this Mac outside its job: the job (`<run id>-<attempt>`) whose one-off end to complete.
+    p.add_argument("--job")
     return root
 
 
@@ -326,6 +398,38 @@ def run_flags(args):
             raise Refusal(f"--cwd {args.cwd} is not a directory", arguments=True, help=f"{args.command} --help")
         flags["cwd"] = str(cwd.resolve())
     return flags
+
+
+def schedule_prompt(args):
+    """K24: the prompt from PROMPT or --prompt-file, stdin only for `--prompt-file -`; None when neither is given (a schedule called again keeps its prompt)."""
+    if args.prompt is None and not args.prompt_file:
+        return None
+    if args.prompt_file == "-":
+        if args.prompt is not None:
+            raise Refusal("give the prompt once: PROMPT or --prompt-file", arguments=True, help="schedule --help")
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise Refusal(f"the prompt on stdin is not UTF-8 text: {e}", arguments=True, help="schedule --help")
+        if not text.strip():
+            raise Refusal("the prompt is empty", arguments=True, help="schedule --help")
+        return text
+    return read_text(args.prompt, args.prompt_file, "schedule")
+
+
+def schedule_schema(path):
+    """The --schema file's JSON object as compact text (K22), or None."""
+    if not path:
+        return None
+    try:
+        obj = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except OSError as e:
+        raise Refusal(f"--schema {path}: {e.strerror or e}", arguments=True, help="schedule --help")
+    except ValueError as e:
+        raise Refusal(f"--schema {path} is not JSON: {e}", arguments=True, help="schedule --help")
+    if not isinstance(obj, dict):
+        raise Refusal(f"--schema {path} must hold a JSON object", arguments=True, help="schedule --help")
+    return json.dumps(obj, ensure_ascii=False)
 
 
 def emit(obj):
@@ -378,12 +482,30 @@ def dispatch(args):
     if c == "models":
         emit(models(cwd=base_dir(args), engine=args.engine, runs_dir=args.runs_dir))
         return 0
+    if c == "schedule":
+        if args.list:
+            emit(schedules(cwd=base_dir(args)))
+            return 0
+        if not args.name:
+            raise Refusal("--name is required", arguments=True, help="schedule --help")
+        flags = {"prompt": schedule_prompt(args), "schema": schedule_schema(args.schema), "cron": args.cron, "at": args.at, "engine": args.engine, "profile": args.profile, "model": args.model, "effort": args.effort, "timeout": args.timeout, "worktree": args.worktree, "pull": args.pull, "runs_on": args.runs_on}
+        emit(schedule(name=args.name, flags=flags, cwd=base_dir(args), dry_run=args.dry_run, public_ok=args.public_ok, message=args.message))
+        return 0
+    if c == "unschedule":
+        emit(unschedule(name=args.name, cwd=base_dir(args), message=args.message))
+        return 0
     if c == "doctor":
         reply = doctor(cwd=base_dir(args), engine=args.engine, runs_dir=args.runs_dir)
         emit(reply)
         return 0 if reply["ok"] else EXIT_BLOCKED
     if c == "__supervise":
         return supervise(args.run_dir)
+    if c == "__scheduled":
+        spec = {"name": args.name, "project": args.project, "settings": {"engine": args.engine, "profile": args.profile, "model": args.model, "effort": args.effort, "timeout": args.timeout}, "cron": args.cron, "at": args.at, "timezone": args.timezone, "worktree": args.worktree, "pull": not args.no_pull, "workflow": args.workflow, "definition": args.definition}
+        write = lambda text: (sys.stdout.write(text), sys.stdout.flush())
+        if args.step == "run":
+            return scheduled_run(spec, dict(os.environ), write)
+        return scheduled_finish(spec, dict(os.environ), write, job=args.job)
     raise Refusal("no command given", arguments=True, help="--help")
 
 

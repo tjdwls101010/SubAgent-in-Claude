@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""A stand-in for the `gh` CLI, first on PATH in schedule tests. It records every call (argv and stdin) under $FAKE_GH_STATE/calls/ and answers from a small simulated GitHub in $FAKE_GH_STATE/world.json, in the shapes of real `gh` output captured from a private repository (tests/support/fixtures/github/*.json: exit code, stdout and stderr per call, with tokens and emails blanked).
+
+world.json: {"auth": "ok" | "none" | "noscope", "repos": {"owner/name": {"private", "default_branch", "files": {path: {"text", "sha"}}, "workflows": {file: state}, "runners": [{"name", "status", "labels"}]}}, "race": n, "race_cron": expr, "protected": bool}
+  A file may carry "graphql": "none" or "truncated": the GraphQL listing then gives its entry no text (the schema's answer for a binary blob; not captured) or a cut one marked `isTruncated`, while the Contents API still returns it whole.
+  Repositories are found whatever the case of the owner and name, and answer with the key's spelling as `full_name`, as GitHub does.
+  race: the next n Contents PUTs first lose to another `schedule` call, which commits the file as it was (or, for a first create, what this call sends) under another definition id — and with `race_cron`, another cron — and get the 409 a real loser got (stage 0 f).
+  protected: a Contents PUT or DELETE gets the 409 a protected branch answered (captured).
+  offline: a Contents PUT fails as gh does without a network: a message on stderr, no HTTP status.
+  slow: every call first sleeps this many seconds.
+  A repository may carry "pulls": [{"number", "head" (a commit sha), "base" (default: the default branch), "base_repo", "state" (open or closed), "merged"}] — what `commits/<sha>/pulls` answers, each in the shape of the captured `commit-pulls-open` or `commit-pulls-merged` — and "unknown_commits": shas GitHub answers 422 "No commit found" for (captured).
+  A repository may carry "git": the path of a bare git repository standing in for GitHub's copy. A Contents PUT or DELETE then also commits the change there, with the request's message, and answers with that commit's sha, so a checkout whose origin is that repository can fetch what the API committed.
+
+An API path is read as gh reads it (Go's net/url; each case captured on a private repository): a `#` starts a fragment that is dropped, the first `?` the query, and every path component and query value is percent-decoded once — so a raw `a#b.yml` names `a` — while an escape that is not two hex digits fails before any request. A Contents GET whose `ref` is not the default branch gets the 404 a missing ref got.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from urllib.parse import unquote
+
+STATE = Path(os.environ.get("FAKE_GH_STATE", "/tmp/fake-gh"))
+FIXTURES = Path(os.environ.get("FAKE_GH_FIXTURES", Path(__file__).resolve().parent.parent / "fixtures" / "github"))
+(STATE / "calls").mkdir(parents=True, exist_ok=True)
+stdin = sys.stdin.read() if "--input" in sys.argv else None
+(STATE / "calls" / f"{time.time_ns()}-{os.getpid()}.json").write_text(json.dumps({"argv": sys.argv[1:], "stdin": stdin}))
+world_path = STATE / "world.json"
+world = json.loads(world_path.read_text()) if world_path.exists() else {"auth": "ok", "repos": {}}
+
+
+def save():
+    world_path.write_text(json.dumps(world))
+
+
+def fixture(name):
+    return json.loads((FIXTURES / f"{name}.json").read_text())
+
+
+def answer(_fixture, **patch):
+    """Reply as the captured call `_fixture` did, with JSON fields replaced by `patch` (dotted keys reach into objects)."""
+    f = fixture(_fixture)
+    out = f["stdout"]
+    if patch and out.strip():
+        data = json.loads(out)
+        for key, value in patch.items():
+            target = data
+            *path, last = key.split(".")
+            for p in path:
+                target = target[p]
+            target[last] = value
+        out = json.dumps(data)
+    sys.stdout.write(out)
+    sys.stderr.write(f["stderr"])
+    sys.exit(f["exit"])
+
+
+def error(name, message=None, status=None):
+    f = fixture(name)
+    data = json.loads(f["stdout"])
+    if message is not None:
+        data["message"] = message
+    if status is not None:
+        data["status"] = str(status)
+    sys.stdout.write(json.dumps(data))
+    sys.stderr.write(f"gh: {data['message']} (HTTP {data['status']})\n")
+    sys.exit(1)
+
+
+def sha_of(text):
+    return hashlib.sha1(f"blob {len(text.encode())}\0{text}".encode()).hexdigest()
+
+
+def commit_sha(repo=None, fpath=None, text=None, message=None):
+    """The sha a Contents write answers with: a commit made in the repository's `git` stand-in when it has one (`text` None deletes the file), a made-up one otherwise."""
+    bare = (repo or {}).get("git")
+    if not bare:
+        return hashlib.sha1(str(time.time_ns()).encode()).hexdigest()
+    import subprocess
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    work = STATE / "git-work"
+
+    def git(*args):
+        return subprocess.run(["git", "-c", "user.email=github@example.com", "-c", "user.name=GitHub", *args], cwd=work if work.exists() else STATE, env=env, check=True, capture_output=True, text=True).stdout.strip()
+
+    if not work.exists():
+        git("clone", "-q", bare, str(work))
+    git("pull", "-q", "--ff-only")
+    target = work / fpath
+    if text is None:
+        git("rm", "-q", "--ignore-unmatch", fpath)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        git("add", fpath)
+    if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=work, env=env).returncode == 0:
+        # A file a test planted only in this world, not in the stand-in: nothing to commit there.
+        return hashlib.sha1(str(time.time_ns()).encode()).hexdigest()
+    git("commit", "-q", "-m", message or "update")
+    git("push", "-q", "origin", "HEAD")
+    return git("rev-parse", "HEAD")
+
+
+args = sys.argv[1:]
+if world.get("slow"):
+    time.sleep(float(world["slow"]))
+if args[:2] == ["auth", "status"]:
+    mode = world.get("auth", "ok")
+    if mode == "none":
+        answer("auth-status-none")
+    f = json.loads(fixture("auth-status")["stdout"])
+    host = f["hosts"]["github.com"][0]
+    host["login"] = "someone"
+    if mode == "noscope":
+        host["scopes"] = "gist, read:org, repo"
+    print(json.dumps(f))
+    sys.exit(0)
+
+def option(name):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else None
+
+
+if args[:2] == ["workflow", "run"]:
+    # What a dispatcher or an orchestrator's check run calls; answered as gh 2.103 did on the probe repository: the new run's URL, or the refusal for a disabled or missing workflow.
+    file, repo_name = args[2], option("--repo")
+    canonical = next((k for k in world["repos"] if k.lower() == (repo_name or "").lower()), None)
+    states = (world["repos"].get(canonical) or {}).get("workflows", {})
+    if file not in states:
+        f = fixture("dispatch-404")
+        sys.stderr.write(f["stderr"].replace("claude-none.yml", file))
+        sys.exit(1)
+    if states[file] != "active":
+        print(f"could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow (https://api.github.com/repos/{canonical}/actions/workflows/1/dispatches)", file=sys.stderr)
+        sys.exit(1)
+    runs = world.setdefault("runs", [])
+    run_id = 44000000000 + len(runs) + 1
+    fields = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "-f" and i + 1 < len(args))
+    # The run's title is the workflow's `run-name`: the schedule's name (a quoted string, or bare as 0.2.0 wrote it), then what started it.
+    text = (world["repos"][canonical].get("files", {}).get(f".github/workflows/{file}") or {}).get("text", "")
+    quoted, bare = re.search(r'^run-name: "(.*) · \$\{\{', text, re.M), re.search(r"^run-name: (.*) · \$\{\{", text, re.M)
+    title = json.loads(f'"{quoted.group(1)}"') if quoted else bare.group(1) if bare else file.rsplit(".", 1)[0]
+    runs.append({"databaseId": run_id, "workflowName": file, "displayTitle": f"{title} · {fields.get('mode') == 'check' and 'check' or fields.get('source') or 'workflow_dispatch'}", "event": "workflow_dispatch", "status": "completed", "conclusion": "success", "createdAt": "2026-11-17T06:00:00Z", "url": f"https://github.com/{canonical}/actions/runs/{run_id}"})
+    save()
+    print(f"https://github.com/{canonical}/actions/runs/{run_id}")
+    sys.exit(0)
+
+if args[:2] in (["run", "list"], ["run", "view"], ["run", "watch"]):
+    # Every run the fake started finished green; what an orchestrator reads after a check run.
+    runs = world.get("runs", [])
+    if args[1] == "list":
+        if option("--workflow"):
+            runs = [r for r in runs if r["workflowName"] == option("--workflow")]
+        if "--json" in args:
+            print(json.dumps(runs))
+        else:
+            for r in runs:
+                print(f"completed\tsuccess\t{r['displayTitle']}\t{r['workflowName']}\tmain\t{r['event']}\t{r['databaseId']}\t15s\t{r['createdAt']}")
+        sys.exit(0)
+    run = next((r for r in runs if str(r["databaseId"]) == (args[2] if len(args) > 2 else "")), None)
+    if run is None:
+        print(f"could not find any workflow run with ID {args[2] if len(args) > 2 else ''}", file=sys.stderr)
+        sys.exit(1)
+    if args[1] == "watch":
+        print(f"✓ Run {run['displayTitle']} ({run['databaseId']}) completed with 'success'")
+        sys.exit(0)
+    if "--json" in args:
+        print(json.dumps(run))
+    else:
+        print(f"✓ main {run['displayTitle']} · {run['databaseId']}\nTriggered via workflow_dispatch\n\nJOBS\n✓ run in 15s (ID 1)\n\nFor more information about the job, try: gh run view --job=1\nView this run on GitHub: {run['url']}")
+    sys.exit(0)
+
+if args[:1] != ["api"]:
+    print(f"fake gh: unsupported {args[:2]}", file=sys.stderr)
+    sys.exit(64)
+
+if args[1:2] == ["graphql"]:
+    # The one query the skill sends: the workflow directory's tree on a branch, with each blob's text (captured: graphql-workflows*.json, graphql-repo-404.json).
+    variables = json.loads(stdin)["variables"]
+    wanted = f"{variables['owner']}/{variables['name']}"
+    canonical = next((k for k in world["repos"] if k.lower() == wanted.lower()), None)
+    if canonical is None:
+        answer("graphql-repo-404")
+    repo = world["repos"][canonical]
+    branch, _, directory = variables["e"].partition(":")
+    entries = {}
+    for fpath, f in repo.get("files", {}).items():
+        if branch != repo.get("default_branch", "main") or not fpath.startswith(directory + "/"):
+            continue
+        name, _, deeper = fpath[len(directory) + 1 :].partition("/")
+        if deeper:
+            entries[name] = {"name": name, "type": "tree", "object": {}}
+        else:
+            how = f.get("graphql")
+            text = None if how == "none" else f["text"][: len(f["text"]) // 2] if how == "truncated" else f["text"]
+            entries[name] = {"name": name, "type": "blob", "object": {"byteSize": len(f["text"].encode()), "isTruncated": how == "truncated", "text": text}}
+    if not entries:
+        answer("graphql-workflows-nodir")
+    print(json.dumps({"data": {"repository": {"object": {"entries": [entries[k] for k in sorted(entries)]}}}}))
+    sys.exit(0)
+
+method = args[args.index("-X") + 1] if "-X" in args else "GET"
+path = next(a for a in args[1:] if not a.startswith("-") and a not in (method, "-"))
+body = json.loads(stdin) if stdin else {}
+bad = re.search(r"%(?![0-9A-Fa-f]{2}).{0,2}", path)
+if bad:
+    print(f'parse "https://api.github.com/{path}": invalid URL escape "{bad.group(0)}"', file=sys.stderr)
+    sys.exit(1)
+path_only, _, query_text = path.split("#", 1)[0].partition("?")
+query = {k: unquote(v) for k, _, v in (q.partition("=") for q in query_text.split("&") if q)}
+m = re.match(r"^repos/([^/]+/[^/]+)(?:/(.*))?$", path_only)
+if not m:
+    print(f"fake gh: unsupported path {path}", file=sys.stderr)
+    sys.exit(64)
+repo_name, rest = m.group(1), "/".join(unquote(part) for part in (m.group(2) or "").split("/"))
+canonical = next((k for k in world["repos"] if k.lower() == repo_name.lower()), None)
+repo = world["repos"].get(canonical) if canonical else None
+if repo is None:
+    answer("repo-404")
+repo_name = canonical
+
+if rest == "":
+    answer("repo", full_name=repo_name, private=repo.get("private", True), visibility="private" if repo.get("private", True) else "public", default_branch=repo.get("default_branch", "main"))
+
+c = re.match(r"^contents/(.+)$", rest)
+if c:
+    fpath = c.group(1)
+    files = repo.setdefault("files", {})
+    cur = files.get(fpath)
+    name = fpath.rsplit("/", 1)[-1]
+    url = f"https://github.com/{repo_name}/blob/main/{fpath}"
+    if method == "GET":
+        if query.get("ref", repo.get("default_branch", "main")) != repo.get("default_branch", "main"):
+            error("contents-get-noref", f"No commit found for the ref {query['ref']}")
+        if cur is None and any(k.startswith(fpath + "/") for k in files):
+            answer("contents-dir")  # a directory answers with a list of its entries
+        if cur is None:
+            answer("contents-get-404")
+        answer("contents-get", name=name, path=fpath, sha=cur["sha"], content=base64.b64encode(cur["text"].encode()).decode(), html_url=url)
+    if world.get("offline") and method != "GET":
+        print("error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com", file=sys.stderr)
+        sys.exit(1)
+    if world.get("protected"):
+        answer("contents-put-protected" if method == "PUT" else "contents-delete-protected")
+    if method == "PUT":
+        text = base64.b64decode(body["content"]).decode()
+        if world.get("race", 0) > 0:
+            world["race"] -= 1
+            # The other call committed what was there (or, for a first create, what this call sends) under its own definition id.
+            other = re.sub(r'(--definition |"definition": ")([0-9a-f]+)', lambda m: m.group(1) + "0th3r0ne", cur["text"] if cur else text)
+            if world.get("race_cron"):
+                new = world["race_cron"]
+                other = re.sub(r'("cron": ")[^"]*(")', lambda m: m.group(1) + new + m.group(2), other)
+                other = re.sub(r"(- cron: ')[^']*(')", lambda m: m.group(1) + new + m.group(2), other)
+                other = re.sub(r'(\\"--cron\\" \\")[^\\]*(\\")', lambda m: m.group(1) + new + m.group(2), other)
+                other = re.sub(r"(--cron ')[^']*(')", lambda m: m.group(1) + new + m.group(2), other)
+            files[fpath] = {"text": other, "sha": sha_of(other)}
+            repo.setdefault("workflows", {})[name] = "active"
+            save()
+            error("race-b", f"is at {sha_of(other)} but expected {body.get('sha') or 'nothing'}")
+        if cur is not None and not body.get("sha"):
+            answer("contents-put-nosha")
+        if cur is not None and body["sha"] != cur["sha"]:
+            error("contents-put-stale", f"{fpath} does not match {body['sha']}")
+        new_sha = sha_of(text)
+        files[fpath] = {"text": text, "sha": new_sha}
+        if fpath.startswith(".github/workflows/"):
+            repo.setdefault("workflows", {}).setdefault(name, "active")
+        save()
+        answer("contents-put-update" if cur else "contents-put-create", **{"content.sha": new_sha, "content.path": fpath, "content.name": name, "content.html_url": url, "commit.sha": commit_sha(repo, fpath, text, body.get("message")), "commit.message": body.get("message")})
+    if method == "DELETE":
+        if cur is None:
+            answer("contents-get-404")
+        if body.get("sha") != cur["sha"]:
+            error("contents-put-stale", f"{fpath} does not match {body.get('sha')}")
+        del files[fpath]
+        repo.get("workflows", {}).pop(name, None)
+        save()
+        answer("contents-delete", **{"commit.sha": commit_sha(repo, fpath, None, body.get("message")), "commit.message": body.get("message")})
+
+pc = re.match(r"^commits/([0-9a-f]{7,40})/pulls$", rest)
+if pc:
+    sha = pc.group(1)
+    if sha in repo.get("unknown_commits", []):
+        error("commit-pulls-unknown-commit", f"No commit found for SHA: {sha}")
+    # Each pull request is a captured one — an open one for state open, a merged one otherwise — with the world's fields put in.
+    found = []
+    for pr in repo.get("pulls", []):
+        if pr["head"] != sha:
+            continue
+        item = json.loads(fixture("commit-pulls-open" if pr.get("state") == "open" else "commit-pulls-merged")["stdout"])[0]
+        item.update({"number": pr["number"], "state": pr.get("state", "closed"), "merged_at": "2026-11-23T11:18:44Z" if pr.get("merged") else None, "html_url": f"https://github.com/{repo_name}/pull/{pr['number']}"})
+        item["head"]["sha"] = sha
+        item["base"]["ref"] = pr.get("base", repo.get("default_branch", "main"))
+        item["base"]["repo"]["full_name"] = pr.get("base_repo", repo_name)
+        found.append(item)
+    sys.stdout.write(json.dumps(found))
+    sys.exit(0)
+
+w = re.match(r"^actions/workflows/([^/]+)(?:/(enable|disable))?$", rest)
+if w:
+    file, action = w.group(1), w.group(2)
+    states = repo.setdefault("workflows", {})
+    if file not in states:
+        answer("workflow-404")
+    if action:
+        if world.get("fail_disable") and action == "disable":
+            error("workflow-404", "Resource not accessible by integration", 403)
+        states[file] = "active" if action == "enable" else "disabled_manually"
+        save()
+        answer("workflow-enable")
+    answer("workflow-active" if states[file] == "active" else "workflow-disabled", path=f".github/workflows/{file}", state=states[file])
+
+if rest == "actions/workflows":
+    f = json.loads(fixture("workflows-list")["stdout"])
+    template = f["workflows"][0]
+    per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+    every = [{**template, "name": file, "path": f".github/workflows/{file}", "state": state} for file, state in sorted(repo.get("workflows", {}).items())]
+    f["workflows"] = every[(page - 1) * per : page * per]
+    f["total_count"] = len(every)
+    print(json.dumps(f))
+    sys.exit(0)
+
+if rest == "actions/runners":
+    f = json.loads(fixture("runners")["stdout"])
+    template = f["runners"][0]
+    f["runners"] = [{**template, "name": r["name"], "status": r.get("status", "online"), "busy": False, "labels": [{"id": 0, "name": l, "type": "read-only"} for l in r.get("labels", ["self-hosted", "macOS", "ARM64"])]} for r in repo.get("runners", [])]
+    f["total_count"] = len(f["runners"])
+    print(json.dumps(f))
+    sys.exit(0)
+
+print(f"fake gh: unsupported {method} {path}", file=sys.stderr)
+sys.exit(64)

@@ -25,6 +25,9 @@ KINDS = {
     "observe": "feature",
     "doctor": "feature",
     "models": "feature",
+    "schedule": "feature",
+    "github": "system",
+    "launchd": "system",
     "registry": "store",
     "claude_cli": "system",
     "codex_cli": "system",
@@ -34,7 +37,7 @@ KINDS = {
 }
 # A unit may import a unit of a lower layer. Features may import each other only along FEATURE_EDGES.
 LAYER = {"feature": 3, "store": 2, "system": 1, "shared": 0}
-FEATURE_EDGES = {("runs", "engine"), ("observe", "engine"), ("doctor", "engine"), ("batch", "runs"), ("batch", "engine"), ("models", "engine")}
+FEATURE_EDGES = {("runs", "engine"), ("observe", "engine"), ("doctor", "engine"), ("batch", "runs"), ("batch", "engine"), ("models", "engine"), ("schedule", "runs"), ("schedule", "batch"), ("schedule", "observe"), ("schedule", "engine"), ("doctor", "schedule")}
 # An engine's CLI unit is imported by engine/ alone, so every other feature reaches an engine through the adapter contract.
 ENGINE_SYSTEMS = {"claude_cli", "codex_cli"}
 

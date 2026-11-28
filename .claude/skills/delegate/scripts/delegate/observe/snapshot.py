@@ -47,6 +47,7 @@ def snapshot_of(run_dir, attention_override=None):
         "schema": v["schema"],
         "json": v["json"],
         "lines": adapter(meta["engine"]).log_lines(v),
+        "rows": v.get("rows"),
         "unparsed": v["unparsed"],
         "rate_limit": v.get("rate_limit"),
         "live": live,
@@ -56,5 +57,5 @@ def snapshot_of(run_dir, attention_override=None):
 
 
 def snapshot(*, cwd, ref, runs_dir=None):
-    """The run `ref` names, as structure: `meta` (as recorded), `header` (the fields `result` prints, except `next`), `text` (the final message, or the latest one while live), `schema` (whether it is a --schema run), `json` (the structured output, None while undecided or when there is none — never an error), `lines` (what `log` prints), `unparsed` (event lines that were not JSON), `rate_limit`, `live` and `decided`."""
+    """The run `ref` names, as structure: `meta` (as recorded), `header` (the fields `result` prints, except `next`), `text` (the final message, or the latest one while live), `schema` (whether it is a --schema run), `json` (the structured output, None while undecided or when there is none — never an error), `lines` (what `log` prints), `rows` (the activity as structured rows, for an engine whose view has them — claude's; None otherwise), `unparsed` (event lines that were not JSON), `rate_limit`, `live` and `decided`."""
     return snapshot_of(find_run(resolve_runs_dir(cwd, runs_dir), ref))
