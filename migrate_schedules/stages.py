@@ -264,7 +264,8 @@ def rollback(j: Journal, row, ctx):
     old_text = (s.get("published") or {}).get("old_text") or (s.get("pending") or {}).get("old_text")
     if old_text:
         _own_file(row, ctx, s, old_text)
-    if s.get("published") or s.get("pending") or s.get("new_dispatcher"):
+    # A finished one-off was never switched on under this skill — resume passes it by — and its file may be gone: there is no new side to freeze.
+    if row["class"] != "finished" and (s.get("published") or s.get("pending") or s.get("new_dispatcher")):
         set_workflow_enabled(ctx["repo"], row["file"], False)
         pending = unfinished_runs(ctx["repo"], row["file"])
         if pending:
