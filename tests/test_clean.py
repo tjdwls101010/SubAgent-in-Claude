@@ -393,3 +393,29 @@ class Landed(Worktrees):
         reply, _ = self.clean_landed("pr", {"landed": True, "label": "#204", "default": "main"})
         (removed,) = reply["removed"]
         self.assertNotIn("dormant", removed["branches_deleted"])
+
+
+class PostReview(Worktrees):
+    """GPT review after PR 3: a clean that looked at an earlier use of a name (1), a path git no longer records as the checkout (2), submodule commits only a local branch holds (3)."""
+
+    def test_a_clean_of_an_earlier_use_of_the_name_leaves_the_next_one_alone(self):
+        import subprocess, sys, time
+        from support.harness import ENTRY, engine
+        reg = engine("delegate.registry")
+        self.batch("g", "first [[fake:write:old.txt]]")
+        lock = self.runs_dir() / ".locks" / "publish.lock"
+        with reg.publish_lock(str(self.runs_dir())):
+            # Clean A has read generation 1 and waits for the publish lock. The lock file is unlinked under it, so clean B and the next batch lock a new one and run while A still waits: A is held just before its lock while the name is cleaned and used again.
+            a = subprocess.Popen([sys.executable, str(ENTRY), "clean", "--group", "g", "--force"], cwd=self.project, env=self.env, stdout=subprocess.PIPE, text=True)
+            self.addCleanup(a.kill)
+            time.sleep(1.5)
+            self.assertIsNone(a.poll())
+            lock.unlink()
+            self.assertTrue(self.clean("g", "--force")["name_released"])
+            self.batch("g", "second [[fake:write:new.txt]]")
+            self.assertTrue((self.wt("g-1") / "new.txt").exists())
+        out, _ = a.communicate(timeout=60)
+        reply = json.loads(out)
+        self.assertTrue((self.wt("g-1") / "new.txt").exists(), f"a clean of generation 1 removed generation 2's checkout: {reply}")
+        self.assertFalse(reply["name_released"], reply)
+        self.assertTrue(self.cli_json("status", "--group", "g")["members"][0]["run_id"])

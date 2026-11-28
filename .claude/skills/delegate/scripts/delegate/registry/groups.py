@@ -89,11 +89,13 @@ def group_view(runs_dir, name):
 
 
 def release_group(runs_dir, name, generation):
-    """Release the name, if it is still the generation `clean` looked at."""
+    """Release the name, if it is still the generation `clean` looked at; whether it did."""
     with _lock(runs_dir, name):
         manifest = read_json(_path(runs_dir, name))
         if manifest is not None and manifest.get("generation") == generation:
             _path(runs_dir, name).unlink(missing_ok=True)
+            return True
+        return False
 
 
 def list_groups(runs_dir):

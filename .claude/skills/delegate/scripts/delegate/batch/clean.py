@@ -2,7 +2,7 @@
 
 A checkout is removed only when removing it loses nothing: no change to a tracked file, every untracked or ignored entry either a `.worktreeinclude` copy (a claude member's) or a startup artifact unchanged since the member's first init recorded it, and no commit on a detached HEAD that no branch holds. `git worktree remove` would silently delete ignored files, so this check comes first. --force discards what the check would keep, but never live work, an orphan still writing, a checkout any run of any engine works in, a member whose record cannot be read, or commits no branch holds.
 
-Each member's check and removal happen under the registry's publish lock, the same lock every run is published under, so no run can start working in a checkout between `clean`'s look and its removal.
+Each member's check and removal happen under the registry's publish lock, the same lock every run is published under, so no run can start working in a checkout between `clean`'s look and its removal; and only while the name is still the use of it `clean` read, since a claude member's checkout path is the same on every use of the name.
 
 A caller that can ask GitHub (a schedule's Finish) passes `landed`: a member whose commits are already on GitHub then goes even with something left in it, which is first kept in git under refs/delegate/leftovers/<group>-<index>, and its branches go with it when they point at that commit; a member whose pull request is still open stays.
 """
@@ -74,7 +74,7 @@ def clean(*, runs_dir, name, force=False, landed=None, untouched_since=None):
             live.append(meta["run_id"])
     if live:
         raise Refusal(f"group {name} has live runs; live work is never removed", live=live, instead=invocation("stop", "--group", name, *registry_args(runs_dir)), why="stop them first, then clean")
-    removed, kept = [], []
+    removed, kept, superseded = [], [], False
     for slot in slots:
         meta = metas.get(slot["index"])
         wt = checkout_of(slot, meta)
@@ -85,16 +85,27 @@ def clean(*, runs_dir, name, force=False, landed=None, untouched_since=None):
         if not wt:
             continue
         with publish_lock(runs_dir):
+            if not still_this_use(runs_dir, name, manifest.get("generation")):
+                superseded = True
+                break
             clean_member(runs_dir, slot, meta, wt, force, removed, kept, group=name, landed=landed, untouched_since=untouched_since)
-    released = not kept and not unreadable
-    if released:
-        release_group(runs_dir, name, manifest.get("generation"))
+    released = not superseded and not kept and not unreadable and release_group(runs_dir, name, manifest.get("generation"))
     reply = {"group": name, "removed": removed, "kept": kept, "name_released": released}
     if force:
         reply["forced"] = True
-    if not released:
+    if superseded or (not released and not kept and not unreadable):
+        reply["note"] = "another clean released the name meanwhile (and a batch may have used it again); nothing more of the use this clean read was touched"
+    elif not released:
         reply["note"] = "the name stays reserved until every checkout is removed"
     return reply
+
+
+def still_this_use(runs_dir, name, generation):
+    """Whether `name` is still reserved by the use of it `clean` read: another clean may have released it since, and a batch taken it again."""
+    try:
+        return group_view(runs_dir, name).get("generation") == generation
+    except (NotFound, Refusal):
+        return False
 
 
 def occupants(runs_dir, path):
