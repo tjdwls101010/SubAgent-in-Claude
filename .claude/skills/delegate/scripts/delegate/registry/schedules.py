@@ -150,8 +150,10 @@ def _legacy_claim(state, name, slot, exact):
     for job in (claim["job"], retried):
         if job and (state["jobs"].get(job) or {"legacy": True}).get("legacy"):
             rec = (old.get("jobs") or {}).get(job) or {}
-            ended = next((m.get("state") for _, m in reversed(_schedule_runs(legacy, name)) if m["origin"].get("job") == job), None)
-            state["jobs"][job] = {**(state["jobs"].get(job) or {}), **rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
+            run = next((m for _, m in reversed(_schedule_runs(legacy, name)) if m["origin"].get("job") == job), {})
+            ended, profile = run.get("state"), (run.get("settings") or {}).get("profile")
+            # A job its record pruned is known only from its run: the profile it ran under decides whether its slot is retried.
+            state["jobs"][job] = {**(state["jobs"].get(job) or {}), **({"profile": profile} if profile else {}), **rec, "legacy": True, **({"legacy_run_state": ended} if ended else {})}
     claim = {"job": claim["job"], "retried": retried, **({"exact": True} if exact or mine.get("exact") else {})}
     state["slots"][str(slot)] = claim
     return claim
