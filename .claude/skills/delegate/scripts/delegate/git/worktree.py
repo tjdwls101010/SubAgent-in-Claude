@@ -409,13 +409,12 @@ def remove_unfinished(repo, path):
     if code != 0:
         return False, "git could not list the worktrees"
     here = os.path.realpath(path)
-    unfinished = not (path / ".git").exists()
-    if not unfinished:
-        for record in out.split("\n\n"):
-            lines = record.splitlines()
-            if lines and lines[0].startswith("worktree ") and os.path.realpath(lines[0][len("worktree "):]) == here:
-                # 성진: a git that translates its messages writes the lock reason in its own language; the checkout is then kept, the safe side. Match the translations too if that is ever seen.
-                unfinished = "locked initializing" in lines
+    record = next((r.splitlines() for r in out.split("\n\n") if r.startswith("worktree ") and os.path.realpath(r.splitlines()[0][len("worktree "):]) == here), None)
+    if record is None:
+        # A directory at a path git no longer records (the checkout moved away, then someone made one there) is not git's to remove.
+        return False, "git does not record a checkout at this path"
+    # 성진: a git that translates its messages writes the lock reason in its own language; the checkout is then kept, the safe side. Match the translations too if that is ever seen.
+    unfinished = not (path / ".git").exists() or "locked initializing" in record
     if not unfinished:
         return False, "not a checkout git left unfinished"
     run_git(repo, "worktree", "unlock", str(path))

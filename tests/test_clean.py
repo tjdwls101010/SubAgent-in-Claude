@@ -419,3 +419,15 @@ class PostReview(Worktrees):
         self.assertTrue((self.wt("g-1") / "new.txt").exists(), f"a clean of generation 1 removed generation 2's checkout: {reply}")
         self.assertFalse(reply["name_released"], reply)
         self.assertTrue(self.cli_json("status", "--group", "g")["members"][0]["run_id"])
+
+    def test_a_directory_git_does_not_record_is_not_deleted_by_hand(self):
+        self.batch("mv", "x")
+        old, moved = self.wt("mv-1"), self.root / "moved"
+        git(self.project, "worktree", "unlock", str(old), check=False)
+        git(self.project, "worktree", "move", str(old), str(moved))
+        old.mkdir()
+        (old / "mine.txt").write_text("a person's file\n")
+        out = self.clean("mv", "--force")
+        self.assertTrue((old / "mine.txt").exists(), f"clean --force deleted a directory git does not record as the checkout: {out}")
+        self.assertEqual([k["index"] for k in out["kept"]], [1], out)
+        self.assertFalse(out["name_released"])
