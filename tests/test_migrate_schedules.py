@@ -511,3 +511,23 @@ class MoveRepairReview(MoveWorld):
         registry.claim_slot(str(self.runs_dir()), "nightly", slot, "44000000001-1", {"trigger": "recovery", "profile": "full"}, exact=True)
         self.job("resume", now=later)
         self.assertEqual(len([c for c in self.gh_calls() if c["argv"][:3] == ["workflow", "run", "nightly.yml"]]), 1, "claimed after the first dispatch, it is not dispatched again")
+
+    def test_a_rollback_refused_for_a_changed_workflow_keeps_its_dispatcher(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        edited = self.committed("nightly").replace("work for nightly", "other work for nightly")
+        self.plant("nightly.yml", edited)
+        out = self.job("rollback", "--only", "nightly", expect=1)
+        self.assertIn("changed", out["results"][0]["error"])
+        self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active")
+        self.assertTrue(self.plist(NEW_PREFIX + "nightly"), "a rollback that touches nothing leaves the active workflow its dispatcher")
+
+    def test_a_rollback_does_not_overwrite_a_change_made_while_it_runs(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish", "resume")
+        # Someone's `schedule` lands right after the rollback checked the file was the move's.
+        edited = self.committed("nightly").replace("work for nightly", "other work for nightly")
+        self.world(commit_on_disable={"path": ".github/workflows/nightly.yml", "text": edited})
+        out = self.job("rollback", "--only", "nightly", expect=1)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assertEqual(self.committed("nightly"), edited, "the change made meanwhile is kept")

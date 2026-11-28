@@ -246,11 +246,11 @@ def _recover_again(row, ctx, s):
 
 
 def _own_file(row, ctx, s, old_text):
-    """Stop unless the workflow file is one the move knows: the old text, what it published (or, when the publish stopped before journaling, what it would have), or nothing after a finished one-off's deletion. Anything else is someone's change since, which a rollback would undo."""
+    """The workflow file as read now (None when there is none), once it is one the move knows: the old text, what it published (or, when the publish stopped before journaling, what it would have), or nothing after a finished one-off's deletion. Anything else is someone's change since, which a rollback would undo: it stops."""
     current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
     if current is None:
         if (s.get("published") or {}).get("deleted") or (s.get("pending") and row["class"] == "finished"):
-            return
+            return None
     else:
         known = {old_text}
         if s.get("spec"):
@@ -258,7 +258,7 @@ def _own_file(row, ctx, s, old_text):
         elif row["class"] != "finished":
             known.add(render_workflow(new_spec(row, ctx, text=old_text, frozen_at=s.get("frozen_at"))))
         if current.get("text") in known:
-            return
+            return current
     raise RuntimeError(f"{row['name']}: .github/workflows/{row['file']} changed since the move " + ("deleted it" if current is None else "wrote it") + "; nothing was rolled back — find out what changed it first")
 
 
@@ -267,13 +267,13 @@ def rollback(j: Journal, row, ctx):
     name, s = row["name"], j.of(row["name"])
     if s.get("rolled_back"):
         return {}
+    old_text = (s.get("published") or {}).get("old_text") or (s.get("pending") or {}).get("old_text")
+    # Checked before anything is touched, and restored against the version checked: a change someone makes after the check makes the restore's commit fail instead of being overwritten.
+    checked = _own_file(row, ctx, s, old_text) if old_text else None
     # Whatever of this skill's dispatcher exists goes, also after a resume that stopped halfway.
     label = dispatcher_label(ctx["repo"], name)
     if agent_state(label) != "missing":
         _move_plist_out(label, j.backup / f"{label}.plist")
-    old_text = (s.get("published") or {}).get("old_text") or (s.get("pending") or {}).get("old_text")
-    if old_text:
-        _own_file(row, ctx, s, old_text)
     # A finished one-off was never switched on under this skill — resume passes it by — and its file may be gone: there is no new side to freeze.
     if row["class"] != "finished" and (s.get("published") or s.get("pending") or s.get("new_dispatcher")):
         set_workflow_enabled(ctx["repo"], row["file"], False)
@@ -306,10 +306,8 @@ def rollback(j: Journal, row, ctx):
         tmp.write_text(json.dumps(old))
         os.replace(tmp, old_path)
         note["slots_moved_back"] = sorted(changed)
-    if old_text:
-        current = read_workflow(ctx["repo"], row["file"], ctx["branch"])
-        if (current or {}).get("text") != old_text:
-            write_workflow(ctx["repo"], row["file"], old_text, f"Move schedule {name} back to the claude skill", ctx["branch"], sha=(current or {}).get("sha"))
+    if old_text and (checked or {}).get("text") != old_text:
+        write_workflow(ctx["repo"], row["file"], old_text, f"Move schedule {name} back to the claude skill", ctx["branch"], sha=(checked or {}).get("sha"))
     want = expected(row, ctx)
     set_workflow_enabled(ctx["repo"], row["file"], want == "active")
     backup = Path(s.get("plist_backup") or "")
