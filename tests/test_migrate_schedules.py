@@ -353,3 +353,12 @@ class MoveReview(MoveWorld):
         self.assertIn("changed", out["results"][0]["error"])
         self.assertEqual(self.committed("nightly"), edited)
         self.assertEqual(self.repo()["workflows"]["nightly.yml"], "active", "and is not switched off on the way")
+
+    def test_a_deleted_finished_one_off_is_rolled_back(self):
+        self.job("inventory")
+        self.through("freeze", "state", "publish")
+        self.assertNotIn("done.yml", self.files())
+        self.job("rollback", "--only", "done")
+        self.assertEqual(self.committed("done"), self.legacy_text("done", at="2026-11-16T06:00"))
+        self.assertEqual(self.repo()["workflows"]["done.yml"], "disabled_manually")
+        self.assertIsNone(self.plist(OLD_PREFIX + "done"), "a finished one-off gets no dispatcher back")
