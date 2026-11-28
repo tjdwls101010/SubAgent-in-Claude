@@ -1,0 +1,14 @@
+{
+  "name": "subagent-in-claude",
+  "owner": {"name": "tjdwls101010", "url": "https://github.com/tjdwls101010"},
+  "metadata": {"description": "The delegate plugin: GPT and Claude workers as managed subagents in Claude Code."},
+  "plugins": [
+    {
+      "name": "delegate",
+      "source": "./",
+      "description": "Background workers on two engines — GPT through the local Codex CLI, Claude through headless Claude Code — managed like subagents.",
+      "version": "0.1.0",
+      "license": "Apache-2.0"
+    }
+  ]
+}
