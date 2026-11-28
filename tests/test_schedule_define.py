@@ -1122,6 +1122,20 @@ class OneOff(Scheduling):
         self.assertEqual((self.root / "job" / "1" / "summary").read_text(), summary, "the summary stays as the job wrote it")
         self.assertEqual(self.cli_json("doctor", "--engine", "claude", timeout=120)["schedule"]["unfinished_one_offs"], [])
 
+    def test_finish_run_again_for_an_old_job_leaves_the_one_off_scheduled_since(self):
+        # The one-off ran and ended; it was scheduled again for the next day; then the old job's Finish is run again with the flags the workflow holds now.
+        spec = self.make()
+        self.job(spec, "15", "x")
+        self.cli_json("schedule", "--name", "nightly", "--at", "2026-11-18T06:00", env={"DELEGATE_TEST_NOW": str(AFTER + 600)})
+        newer = self.spec_of()
+        self.assertNotEqual(newer["definition"], spec["definition"])
+        self.assertEqual(self.wf_state(), "active")
+        args = ["--name", newer["name"], "--project", str(self.project), "--profile", newer["profile"], "--model", newer["model"], "--effort", newer["effort"], "--timeout", str(newer["timeout"]), "--at", newer["at"], "--timezone", newer["timezone"], "--workflow", "nightly.yml", "--definition", newer["definition"]]
+        again = self.cli("__scheduled", "finish", *args, "--job", "15-1", env={"DELEGATE_TEST_NOW": str(AFTER + 900)}, timeout=120)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(self.wf_state(), "active", "the one-off scheduled since is not the old job's")
+        self.assertIsNotNone(self.plist())
+
     def test_a_failed_disable_names_the_command(self):
         spec = self.make()
         self.world(fail_disable=True)

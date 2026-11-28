@@ -197,7 +197,7 @@ def scheduled_run(spec, env, write):
     trigger = trigger_of(ctx, env.get("DELEGATE_SCHEDULE_SOURCE") or "", env.get("DELEGATE_SCHEDULE_SLOT") or "")
     s = spec["settings"]
     group = worktree_group(name, ctx["run_id"], ctx["attempt"]) if spec.get("worktree") else None
-    entry = {"trigger": trigger, "mode": "run", "profile": s["profile"], "url": ctx["url"], "attempt": ctx["attempt"], "group": group, "tree_before": None if spec.get("worktree") else status_snapshot(project), "outcome": None}
+    entry = {"trigger": trigger, "mode": "run", "profile": s["profile"], "definition": spec.get("definition"), "url": ctx["url"], "attempt": ctx["attempt"], "group": group, "tree_before": None if spec.get("worktree") else status_snapshot(project), "outcome": None}
     slot = retry_of = None
     if trigger == "recovery":
         now = clock()
@@ -420,9 +420,11 @@ def _end_one_off(spec, ctx, registry, rec, state):
     name = spec["name"]
     notes, warnings = [], []
     ended = {"disabled": False, "dispatcher": None}
+    # The definition the job was started from, as its Run step recorded it: a Finish run again later may be given the flags of a schedule set since.
+    mine = rec.get("definition") or spec.get("definition")
     with schedule_lock(registry, name):
         current = read_definition(registry, name)
-        if current != spec.get("definition"):
+        if current != mine:
             return ["This one-off was scheduled again or removed while it ran, so this run left the newer definition alone."], []
         # The file this job's step names: a step written before files took the name as given names claude-NAME.yml, and so is one that names none.
         file = spec.get("workflow") or legacy_workflow_file(name)
@@ -443,7 +445,7 @@ def _end_one_off(spec, ctx, registry, rec, state):
                 warnings.append(f"The one-off's dispatcher could not be removed ({gone.get('error')}); {code_span(f'unschedule --name {shlex.quote(name)}')} removes it.")
     if ctx.get("job"):
         # What is left of the one-off's end is what a Finish run again, `doctor` and a move from the `claude` skill read. Recorded after the schedule's lock is let go: update_job takes it itself.
-        update_job(registry, name, ctx["job"], {"one_off_end": {**ended, "done": ended["disabled"] and ended["dispatcher"] in ("removed", "absent"), "definition": spec.get("definition"), "at": now()}})
+        update_job(registry, name, ctx["job"], {"one_off_end": {**ended, "done": ended["disabled"] and ended["dispatcher"] in ("removed", "absent"), "definition": mine, "at": now()}})
     return notes, warnings
 
 
