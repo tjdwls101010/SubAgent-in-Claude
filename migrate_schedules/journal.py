@@ -45,8 +45,20 @@ class Journal:
         return self.data.get("inventory")
 
     def set_inventory(self, inv):
+        """Take `inv` as the inventory the steps act on — except for the schedules a step has touched and not rolled back, which keep the rows they were moved by: read now they would be frozen (held) or rewritten (not listed), and every later step would pass them by. Each batch reads the rest again just before its freeze. Returns the names kept."""
+        touched = {n for n, s in self.data["schedules"].items() if s and not s.get("rolled_back")}
+        kept = [r for r in (self.inventory or {}).get("schedules") or [] if r.get("name") in touched]
+        if kept:
+            names = {r["name"] for r in kept}
+            inv = {**inv, "schedules": [r for r in inv["schedules"] if r.get("name") not in names] + kept}
+            counts = {}
+            for r in inv["schedules"]:
+                counts[r["class"]] = counts.get(r["class"], 0) + 1
+            inv["counts"] = counts
+            inv["kept"] = sorted(names)
         self.data["inventory"] = inv
         self.save()
+        return inv
 
     def of(self, name):
         return self.data["schedules"].get(name) or {}
