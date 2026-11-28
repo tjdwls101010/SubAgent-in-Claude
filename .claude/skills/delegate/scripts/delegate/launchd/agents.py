@@ -133,6 +133,12 @@ def remove_agent(label):
     return {"status": "removed", **reply}
 
 
+def load_agent(label):
+    """Load the plist already at the agent's path into launchd. `{status: loaded | failed, label, error}`."""
+    code, err = _launchctl("bootstrap", _domain(), str(agents_dir() / f"{label}.plist"))
+    return {"status": "loaded" if code == 0 else "failed", "label": label, **({"error": err.strip()} if code != 0 else {})}
+
+
 def agent_state(label):
     """`loaded`, `unloaded` (its plist exists but launchd does not run it) or `missing`."""
     code, _ = _launchctl("print", f"{_domain()}/{label}")

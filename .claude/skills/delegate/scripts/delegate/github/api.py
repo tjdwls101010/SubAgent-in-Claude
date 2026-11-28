@@ -185,16 +185,61 @@ def list_workflow_files(repo, branch):
 
 def workflow_states(repo):
     """The state of every workflow GitHub has registered from the workflow directory: `{file: state}`. A file committed a moment ago can be missing."""
+    return {file: w["state"] for file, w in workflow_index(repo).items()}
+
+
+def workflow_index(repo):
+    """Every workflow GitHub has registered from the workflow directory: `{file: {id, state}}`."""
     out, page = {}, 1
     while True:
         batch = _api(f"repos/{repo}/actions/workflows?per_page=100&page={page}").get("workflows") or []
         for w in batch:
             path = w.get("path") or ""
             if path.startswith(WORKFLOWS + "/"):
-                out[path[len(WORKFLOWS) + 1 :]] = w.get("state")
+                out[path[len(WORKFLOWS) + 1 :]] = {"id": w.get("id"), "state": w.get("state")}
         if len(batch) < 100:
             return out
         page += 1
+
+
+def branch_protected(repo, branch):
+    """Whether `branch` is protected, so that a commit through the Contents API is refused; None when GitHub does not say."""
+    try:
+        _api(f"repos/{repo}/branches/{quote(branch, safe='')}/protection")
+        return True
+    except GitHubError as e:
+        if e.status == 404:
+            return False
+        return None
+
+
+# The run statuses GitHub gives a run that has not finished.
+UNFINISHED = ("requested", "waiting", "pending", "queued", "in_progress")
+
+
+def unfinished_runs(repo, file, limit=1000):
+    """The runs of workflow `file` that have not finished, disabled workflows included (`gh run list --all`): `[{databaseId, status}]`. Each unfinished status is asked of GitHub on its own, so a waiting run behind any number of finished ones is found; `limit` bounds each status's pages."""
+    out = []
+    for status in UNFINISHED:
+        proc = _gh("run", "list", "--repo", repo, "--workflow", file, "--all", "--status", status, "--limit", str(limit), "--json", "databaseId,status")
+        if proc.returncode != 0:
+            raise GitHubError(proc.stderr.strip() or f"gh run list failed for {file}")
+        try:
+            runs = json.loads(proc.stdout or "[]")
+        except ValueError:
+            raise GitHubError(f"gh run list gave something that is not JSON for {file}")
+        out += [r for r in runs if r.get("status") in UNFINISHED and r not in out]
+    return out
+
+
+def dispatch_workflow(repo, file, branch, fields):
+    """Start workflow `file` on `branch` with its dispatch inputs `fields`, as the dispatcher does."""
+    args = ["workflow", "run", file, "--repo", repo, "--ref", branch]
+    for k, v in fields.items():
+        args += ["-f", f"{k}={v}"]
+    proc = _gh(*args)
+    if proc.returncode != 0:
+        raise GitHubError(proc.stderr.strip() or f"gh workflow run {file} failed")
 
 
 def runners(repo):

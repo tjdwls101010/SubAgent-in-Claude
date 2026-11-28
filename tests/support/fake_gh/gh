@@ -3,10 +3,12 @@
 
 world.json: {"auth": "ok" | "none" | "noscope", "repos": {"owner/name": {"private", "default_branch", "files": {path: {"text", "sha"}}, "workflows": {file: state}, "runners": [{"name", "status", "labels"}]}}, "race": n, "race_cron": expr, "protected": bool}
   A file may carry "graphql": "none" or "truncated": the GraphQL listing then gives its entry no text (the schema's answer for a binary blob; not captured) or a cut one marked `isTruncated`, while the Contents API still returns it whole.
+  A file may carry "graphql_text": the text the GraphQL listing gives instead — the file as it was when the listing read it, before a commit the Contents API already shows.
   Repositories are found whatever the case of the owner and name, and answer with the key's spelling as `full_name`, as GitHub does.
   race: the next n Contents PUTs first lose to another `schedule` call, which commits the file as it was (or, for a first create, what this call sends) under another definition id — and with `race_cron`, another cron — and get the 409 a real loser got (stage 0 f).
   protected: a Contents PUT or DELETE gets the 409 a protected branch answered (captured).
   offline: a Contents PUT fails as gh does without a network: a message on stderr, no HTTP status.
+  fail_dispatch: `gh workflow run` fails as GitHub answering 500 does.
   slow: every call first sleeps this many seconds.
   A repository may carry "pulls": [{"number", "head" (a commit sha), "base" (default: the default branch), "base_repo", "state" (open or closed), "merged"}] — what `commits/<sha>/pulls` answers, each in the shape of the captured `commit-pulls-open` or `commit-pulls-merged` — and "unknown_commits": shas GitHub answers 422 "No commit found" for (captured).
   A repository may carry "git": the path of a bare git repository standing in for GitHub's copy. A Contents PUT or DELETE then also commits the change there, with the request's message, and answers with that commit's sha, so a checkout whose origin is that repository can fetch what the API committed.
@@ -133,6 +135,9 @@ if args[:2] == ["workflow", "run"]:
         f = fixture("dispatch-404")
         sys.stderr.write(f["stderr"].replace("claude-none.yml", file))
         sys.exit(1)
+    if world.get("fail_dispatch"):
+        print("could not create workflow dispatch event: HTTP 500: Server Error", file=sys.stderr)
+        sys.exit(1)
     if states[file] != "active":
         print(f"could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow (https://api.github.com/repos/{canonical}/actions/workflows/1/dispatches)", file=sys.stderr)
         sys.exit(1)
@@ -154,6 +159,10 @@ if args[:2] in (["run", "list"], ["run", "view"], ["run", "watch"]):
     if args[1] == "list":
         if option("--workflow"):
             runs = [r for r in runs if r["workflowName"] == option("--workflow")]
+        # As gh lists them: newest first (the world keeps them oldest first), the status filtered on GitHub's side, at most --limit (gh's default 20).
+        if option("--status"):
+            runs = [r for r in runs if option("--status") in (r["status"], r.get("conclusion"))]
+        runs = runs[::-1][: int(option("--limit") or 20)]
         if "--json" in args:
             print(json.dumps(runs))
         else:
@@ -194,9 +203,9 @@ if args[1:2] == ["graphql"]:
         if deeper:
             entries[name] = {"name": name, "type": "tree", "object": {}}
         else:
-            how = f.get("graphql")
-            text = None if how == "none" else f["text"][: len(f["text"]) // 2] if how == "truncated" else f["text"]
-            entries[name] = {"name": name, "type": "blob", "object": {"byteSize": len(f["text"].encode()), "isTruncated": how == "truncated", "text": text}}
+            how, listed = f.get("graphql"), f.get("graphql_text", f["text"])
+            text = None if how == "none" else listed[: len(listed) // 2] if how == "truncated" else listed
+            entries[name] = {"name": name, "type": "blob", "object": {"byteSize": len(listed.encode()), "isTruncated": how == "truncated", "text": text}}
     if not entries:
         answer("graphql-workflows-nodir")
     print(json.dumps({"data": {"repository": {"object": {"entries": [entries[k] for k in sorted(entries)]}}}}))

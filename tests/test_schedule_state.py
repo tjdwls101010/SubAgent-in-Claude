@@ -74,6 +74,33 @@ class Claims(unittest.TestCase):
         registry.update_job(self.reg, "nightly", "r-1", {"outcome": {"kind": "refused", "error": "no commit"}})
         self.assertEqual(registry.claim_slot(self.reg, "nightly", S3, "r-2", self.entry(), exact=True)["decision"], "skip")
 
+    def old_registry(self, name, ended):
+        """The `claude` skill's record of `name`: slot S3 filled by a read-only job whose run ended `ended`."""
+        old = Path(self.reg) / "old"
+        (old / ".schedules" / name).mkdir(parents=True)
+        (old / ".schedules" / name / "state.json").write_text(json.dumps({"name": name, "last_slot": S3, "slots": {str(S3): {"job": "1-1", "retried": None}}, "jobs": {"1-1": {"trigger": "dispatcher", "profile": "read-only", "slot": S3, "run_id": "old-run"}}, "definition": "d0"}))
+        (old / "old-run").mkdir(exist_ok=True)
+        (old / "old-run" / "meta.json").write_text(json.dumps({"run_id": "old-run", "state": ended}))
+        return str(old)
+
+    def test_a_taken_over_slot_is_decided_by_how_its_old_run_ended(self):
+        # The record names runs that live in the old skill's registry: how each ended was recorded when it was taken over.
+        for ended, decision in (("failed", "retry"), ("completed", "skip")):
+            with self.subTest(ended=ended):
+                name = f"moved-{ended}"
+                with registry.schedule_lock(self.reg, name):
+                    registry.take_over_legacy_state(self.reg, name, self.old_registry(name, ended), keep_definition=True)
+                self.assertEqual(registry.schedule_state(self.reg, name)["definition"], "d0", "a move keeps the definition")
+                got = registry.claim_slot(self.reg, name, S3, "2-1", self.entry())
+                self.assertEqual(got["decision"], decision)
+
+    def test_a_takeover_never_replaces_a_record_this_skill_wrote(self):
+        self.claim(S3, "1-1")
+        before = registry.schedule_state(self.reg, "nightly")["jobs"]
+        with registry.schedule_lock(self.reg, "nightly"):
+            registry.take_over_legacy_state(self.reg, "nightly", self.old_registry("nightly", "completed"))
+        self.assertEqual(registry.schedule_state(self.reg, "nightly")["jobs"], before)
+
     def test_an_older_slot_after_a_newer_one_is_skipped(self):
         # ② an hourly backup 70 minutes late: the 04:00 slot already ran, so the 03:00 trigger finds nothing to fill
         self.claim(S4, "1-1")
