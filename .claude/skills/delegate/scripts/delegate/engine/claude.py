@@ -240,7 +240,6 @@ class StdinWriter:
         self.queue = queue.Queue()
         self.lock = threading.Lock()
         self.pending = 0
-        self.written = set()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -259,8 +258,6 @@ class StdinWriter:
             finally:
                 with self.lock:
                     self.pending -= 1
-            with self.lock:
-                self.written.add(uuid)
             self.on_written(uuid)
         try:
             self.stdin.close()
@@ -276,10 +273,6 @@ class StdinWriter:
         """Whether a queued message is not yet fully written."""
         with self.lock:
             return self.pending > 0
-
-    def was_written(self, uuid):
-        with self.lock:
-            return uuid in self.written
 
     def close(self):
         self.queue.put(None)
@@ -435,9 +428,10 @@ class Driver:
             # The process can end between two polls; its init is still part of what the run reported.
             fields.update({"init": init, "mode_mismatch": init["permission_mode"] != EXPECTED_MODE.get(self.profile)})
         events, unparsed = read_events(Path(self.run_dir) / "events.jsonl")
+        # What the run's lock has on record, not what the writer did: a confirmation still waiting for the lock is refused once this outcome is written (`confirm`), so the two never disagree.
         messages = meta.get("messages") or []
         final = final_result(events, messages)
-        fields.update({"exit_code": returncode, "ended_at": now(), "unanswered": [m["uuid"] for m in final["unanswered"]], "undelivered": [m["uuid"] for m in messages if m.get("after_line") is None or not self.writer.was_written(m["uuid"])], "unparsed_events": unparsed})
+        fields.update({"exit_code": returncode, "ended_at": now(), "unanswered": [m["uuid"] for m in final["unanswered"]], "undelivered": [m["uuid"] for m in messages if m.get("delivered_at") is None], "unparsed_events": unparsed})
         result = final["result"]
         if meta.get("cwd_mismatch"):
             state, error = "failed", meta["cwd_mismatch"]

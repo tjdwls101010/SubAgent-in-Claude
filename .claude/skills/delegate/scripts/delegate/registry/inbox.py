@@ -12,7 +12,7 @@ from pathlib import Path
 from delegate.util import now
 
 from .locks import write_json
-from .runs import meta_path, read_meta, run_lock
+from .runs import TERMINAL, meta_path, read_meta, run_lock
 
 
 def _inbox(run_dir):
@@ -70,9 +70,12 @@ def take(run_dir, deliver, lines_read):
 
 
 def confirm(run_dir, uuid):
-    """Record that the message `uuid` is written to stdin in full: its `delivered_at`, then its payload gone from the inbox — in that order, so a supervisor that dies in between leaves a payload whose write is on record, never a write that is not."""
+    """Record that the message `uuid` is written to stdin in full: its `delivered_at`, then its payload gone from the inbox — in that order, so a supervisor that dies in between leaves a payload whose write is on record, never a write that is not. Nothing changes once the run's outcome is recorded."""
     with run_lock(run_dir):
         meta = read_meta(run_dir)
+        if meta.get("state") in TERMINAL:
+            # The outcome is recorded and lists it undelivered; the payload stays with that record.
+            return
         for m in meta.get("messages") or []:
             if m.get("uuid") == uuid:
                 m["delivered_at"] = now()
