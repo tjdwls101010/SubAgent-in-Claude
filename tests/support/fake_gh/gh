@@ -159,6 +159,10 @@ if args[:2] in (["run", "list"], ["run", "view"], ["run", "watch"]):
     if args[1] == "list":
         if option("--workflow"):
             runs = [r for r in runs if r["workflowName"] == option("--workflow")]
+        # As gh lists them: newest first (the world keeps them oldest first), the status filtered on GitHub's side, at most --limit (gh's default 20).
+        if option("--status"):
+            runs = [r for r in runs if option("--status") in (r["status"], r.get("conclusion"))]
+        runs = runs[::-1][: int(option("--limit") or 20)]
         if "--json" in args:
             print(json.dumps(runs))
         else:

@@ -217,16 +217,19 @@ def branch_protected(repo, branch):
 UNFINISHED = ("requested", "waiting", "pending", "queued", "in_progress")
 
 
-def unfinished_runs(repo, file, limit=100):
-    """The runs of workflow `file` that have not finished, disabled workflows included (`gh run list --all`): `[{databaseId, status}]`."""
-    proc = _gh("run", "list", "--repo", repo, "--workflow", file, "--all", "--limit", str(limit), "--json", "databaseId,status")
-    if proc.returncode != 0:
-        raise GitHubError(proc.stderr.strip() or f"gh run list failed for {file}")
-    try:
-        runs = json.loads(proc.stdout or "[]")
-    except ValueError:
-        raise GitHubError(f"gh run list gave something that is not JSON for {file}")
-    return [r for r in runs if r.get("status") in UNFINISHED]
+def unfinished_runs(repo, file, limit=1000):
+    """The runs of workflow `file` that have not finished, disabled workflows included (`gh run list --all`): `[{databaseId, status}]`. Each unfinished status is asked of GitHub on its own, so a waiting run behind any number of finished ones is found; `limit` bounds each status's pages."""
+    out = []
+    for status in UNFINISHED:
+        proc = _gh("run", "list", "--repo", repo, "--workflow", file, "--all", "--status", status, "--limit", str(limit), "--json", "databaseId,status")
+        if proc.returncode != 0:
+            raise GitHubError(proc.stderr.strip() or f"gh run list failed for {file}")
+        try:
+            runs = json.loads(proc.stdout or "[]")
+        except ValueError:
+            raise GitHubError(f"gh run list gave something that is not JSON for {file}")
+        out += [r for r in runs if r.get("status") in UNFINISHED and r not in out]
+    return out
 
 
 def dispatch_workflow(repo, file, branch, fields):
