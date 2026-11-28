@@ -704,6 +704,13 @@ class Legacy(Scheduling):
         self.assertEqual(claim["decision"], "skip", "a late trigger of the new command does not run a slot the old one ran")
         self.assertIsNone(json.loads(old.read_text())["definition"], "a job the old command still runs leaves the schedule alone at its end")
 
+    def test_unschedule_lets_go_of_the_old_records_definition(self):
+        # A one-off job the old command still runs compares its definition with the old record at its end: once the file is removed, a schedule set again under the name is not its own.
+        old = self.old_record(NOW - 3600)
+        self.plant("claude-nightly.yml", self.legacy())
+        self.cli_json("unschedule", "--name", "nightly")
+        self.assertIsNone(json.loads(old.read_text())["definition"])
+
     def test_a_takeover_whose_first_call_could_not_install_still_removes_the_old_dispatcher(self):
         self.plant("claude-nightly.yml", self.legacy())
         self.plant_plist(label=self.OLD_LABEL)

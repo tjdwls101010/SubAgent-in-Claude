@@ -11,7 +11,7 @@ from delegate.errors import Refusal
 from delegate.git import branch_contains, main_checkout, remote_url, toplevel
 from delegate.github import GitHubError, delete_workflow, written_by_legacy, gh_status, legacy_workflow_file, list_workflow_files, local_runners, parse_spec, read_workflow, render_workflow, repo_facts, repo_from_remote, reserved_name, runner_problems, runners, scrub_job_env, set_workflow_enabled, workflow_file, workflow_state, workflow_states, write_workflow
 from delegate.launchd import agent_identity, agent_state, agents_dir, calendar_entries, install_agent, label_problem, list_agents, remove_agent, render_agent, supported, system_timezone
-from delegate.registry import LEGACY_RUNS_DIR, latest_job, read_meta, remove_schedule_state, resolve_runs_dir, schedule_dir, schedule_lock, schedule_runs_live, schedule_state_holder, take_over_legacy_state, write_definition
+from delegate.registry import LEGACY_RUNS_DIR, latest_job, read_meta, release_legacy_definition, remove_schedule_state, resolve_runs_dir, schedule_dir, schedule_lock, schedule_runs_live, schedule_state_holder, take_over_legacy_state, write_definition
 from delegate.runs import refuse_inside_worker
 from delegate.util import entry_path, iso, path_key
 
@@ -326,6 +326,8 @@ def unschedule(*, name, cwd, message=None):
         old = _remove_legacy_dispatcher(repo, name)
         if old:
             reply["dispatcher"]["claude_skill"] = old
+        # A one-off job the `claude` skill's command still runs would otherwise disable a schedule set again under this name at its end.
+        release_legacy_definition(name, str(Path(project) / LEGACY_RUNS_DIR))
         if "workflow" not in reply:
             if current is None:
                 reply["workflow"] = {"status": "absent", "path": f".github/workflows/{file}"}

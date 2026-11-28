@@ -245,6 +245,17 @@ def take_over_legacy_state(registry, name, legacy_registry):
         return True
 
 
+def release_legacy_definition(name, legacy_registry):
+    """Clear the definition the `claude` skill recorded of schedule `name`, under that skill's lock, so a job its command still runs leaves alone, at its end, whatever is scheduled under the name next. Returns whether there was one to clear."""
+    old_path = Path(legacy_registry) / ".schedules" / name / "state.json"
+    with locked(Path(legacy_registry) / ".locks" / f"schedule-{name}.lock"):
+        old = read_json(old_path)
+        if not old or old.get("definition") is None:
+            return False
+        write_json(old_path, {**old, "definition": None})
+        return True
+
+
 def write_definition(registry, name, definition):
     """Record the definition just committed, or None after `unschedule`. Call under schedule_lock."""
     state = _load(registry, name)
