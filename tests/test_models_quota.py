@@ -249,3 +249,14 @@ class ClaudeLimit(Sandbox):
         self.assertEqual(row["state"], "quota_exhausted")
         refused = self.cli_json("start", *CLAUDE_RUN, "again", expect=1)
         self.assertEqual((refused["error"], refused["source"]), ("quota_exhausted", "a run's rate_limit_event"), "a fresh event of this registry is read before /usage")
+
+    def test_another_accounts_rejection_leaves_the_answer_to_usage(self):
+        out = self.start("x [[fake:ratelimit:rejected]] [[fake:error]]")
+        self.assertEqual(self.wait_state(out["run_id"])["state"], "quota_exhausted")
+        # Logged in since to another account, on another plan, whose /usage has room.
+        other = {"FAKE_CLAUDE_AUTH": json.dumps({"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "pro"}), **self.usage(12)}
+        ok = self.start("on the other account", env=other)
+        self.wait_state(ok["run_id"])
+        # A login that cannot be read cannot be matched to the event's either.
+        ok = self.start("login unreadable", env={"FAKE_CLAUDE_AUTH": "not json", **self.usage(12)})
+        self.wait_state(ok["run_id"])

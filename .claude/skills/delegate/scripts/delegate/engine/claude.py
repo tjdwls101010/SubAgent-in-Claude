@@ -296,6 +296,7 @@ class Driver:
         self.pump = None
         self.seen_init = False
         self.rate_limit = None
+        self.account_read = False
         self.retrying = False
         self.finishing = False
         self.stdin_open = True
@@ -391,6 +392,10 @@ class Driver:
         if rl is not None and rl != self.rate_limit:
             self.rate_limit = rl
             changes["rate_limit"] = {**rl, "observed_at": now()}
+            if not self.account_read:
+                # Whose limits the event speaks of, read once, as the run's first event comes: a later start takes the event as its own account's only when its login matches.
+                self.account_read = True
+                changes["account"] = login_account()
         if last_retry and not self.retrying:
             self.retrying = True
             changes["retrying_since"] = now()
@@ -618,19 +623,29 @@ _QUOTA = {}
 ACCOUNT_LIMITS = ("five_hour", "seven_day")
 
 
+def login_account():
+    """The login a run's limits belong to, as far as `claude auth status` tells (its reported fields, never the email or organisation); None when it cannot be read or nobody is logged in."""
+    auth = auth_status()
+    return None if auth.get("error") or not auth.get("loggedIn") else auth
+
+
 def quota(model=None, runs_dir=None):
-    """The account's limits now: a rate-limit event a run of this registry recorded in the last 10 minutes (its scope is the account's), else `claude -p /usage`, which no model call answers."""
+    """The account's limits now: a rate-limit event a run of this registry recorded in the last 10 minutes under the login now in use (its scope is the account's), else `claude -p /usage`, which no model call answers."""
     key = model or ""
     if key in _QUOTA:
         return _QUOTA[key]
     at = now()
-    newest = None
+    newest, whose = None, None
     if runs_dir:
         for _, m in iter_runs(runs_dir):
             rl = m.get("rate_limit")
             # Only an event about the account's own windows speaks for every model; one about a model-scoped limit leaves the answer to /usage.
             if m.get("engine") == NAME and rl and rl.get("observed_at") and at - rl["observed_at"] <= FRESH and rl.get("type") in (None, *ACCOUNT_LIMITS) and (newest is None or rl["observed_at"] > newest["observed_at"]):
-                newest = rl
+                newest, whose = rl, m.get("account")
+    # An event of another login, or of one that cannot be matched, speaks for another account: /usage answers for this one.
+    # 성진: the login is matched on what `claude auth status` reports short of the email and organisation, so two accounts on the same sign-in method and plan look alike; match on more if switching between such accounts becomes usual.
+    if newest and not (whose and whose == login_account()):
+        newest = None
     _QUOTA[key] = quota_from_event(newest, at) if newest else quota_from_usage(usage_report(worker_env(dict(os.environ), {})), model, at)
     return _QUOTA[key]
 
